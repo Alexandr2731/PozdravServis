@@ -1,9 +1,6 @@
 import { Telegraf, Scenes, session } from "telegraf";
 import { greetingWizard } from "./scenes/greeting.js";
 
-console.log("DEBUG BOT_TOKENNP present:", Boolean(process.env.BOT_TOKENNP), "length:", (process.env.BOT_TOKENNP || "").length);
-console.log("DEBUG all env keys:", Object.keys(process.env).filter(k => k.includes("BOT") || k.includes("TOKEN") || k.includes("MUREKA")));
-
 const bot = new Telegraf(process.env.BOT_TOKENNP);
 const stage = new Scenes.Stage([greetingWizard]);
 
