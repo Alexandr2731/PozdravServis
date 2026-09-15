@@ -24,11 +24,14 @@ export const greetingWizard = new Scenes.WizardScene(
       return;
     }
     ctx.reply("Собираю поздравление, это займёт пару минут...");
-    const videoUrl = await generateGreetingVideo({
-      photoFileId: ctx.wizard.state.photoFileId,
-      text,
-    });
-    await ctx.reply(`Готово! ${videoUrl}`);
+    try {
+      const fileLink = await ctx.telegram.getFileLink(ctx.wizard.state.photoFileId);
+      const photoBuffer = Buffer.from(await (await fetch(fileLink.href)).arrayBuffer());
+      const videoUrl = await generateGreetingVideo({ photoBuffer, text });
+      await ctx.reply(`Готово! ${videoUrl}`);
+    } catch (err) {
+      await ctx.reply(`Не получилось создать видео: ${err.message}`);
+    }
     return ctx.scene.leave();
   }
 );
