@@ -1,4 +1,4 @@
-import { Telegraf, Scenes, session } from "telegraf";
+import { Telegraf, Scenes, session, Markup } from "telegraf";
 import { greetingWizard } from "./scenes/greeting.js";
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
@@ -7,16 +7,24 @@ const stage = new Scenes.Stage([greetingWizard]);
 bot.use(session());
 bot.use(stage.middleware());
 
+const serviceKeyboard = Markup.inlineKeyboard([
+  Markup.button.callback("🎬 Анимированное видео-поздравление", "service:video"),
+  Markup.button.callback("🎵 Именная песня + клип", "service:song"),
+]);
+
 bot.start((ctx) =>
-  ctx.reply(
-    "Привет! Я помогу создать необычное поздравление.\n\n" +
-      "1 — Анимированное видео-поздравление\n" +
-      "2 — Именная песня + клип\n\n" +
-      "Напиши 1 или 2, чтобы начать."
-  )
+  ctx.reply("Привет! Я помогу создать необычное поздравление. Что хочешь сделать?", serviceKeyboard)
 );
 
-bot.hears("1", (ctx) => ctx.scene.enter("greeting-wizard"));
+bot.action("service:video", async (ctx) => {
+  await ctx.answerCbQuery();
+  return ctx.scene.enter("greeting-wizard");
+});
+
+bot.action("service:song", async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.reply("Именная песня + клип пока в разработке, скоро будет доступна.");
+});
 
 bot.help((ctx) =>
   ctx.reply(
