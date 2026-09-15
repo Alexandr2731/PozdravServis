@@ -14,7 +14,60 @@ async function uploadImageAsset(photoBuffer) {
   return json.data.id;
 }
 
-async function createVideo({ assetId, text }) {
+async function uploadAudioAsset(audioBuffer) {
+  const form = new FormData();
+  form.append("file", new Blob([audioBuffer], { type: "audio/mpeg" }), "voice.mp3");
+  const res = await fetch("https://api.heygen.com/v3/assets", {
+    method: "POST",
+    headers: { "x-api-key": HEYGEN_API_KEY },
+    body: form,
+  });
+  const json = await res.json();
+  if (!res.ok || !json?.data?.asset_id) {
+    throw new Error(`HeyGen audio asset upload failed: ${JSON.stringify(json)}`);
+  }
+  return json.data.asset_id;
+}
+
+async function cloneVoice(audioAssetId) {
+  const res = await fetch("https://api.heygen.com/v3/voices/clone", {
+    method: "POST",
+    headers: { "x-api-key": HEYGEN_API_KEY, "Content-Type": "application/json" },
+    body: JSON.stringify({
+      voice_name: `client-${Date.now()}`,
+      audio: { type: "asset_id", asset_id: audioAssetId },
+      language: "ru",
+    }),
+  });
+  const json = await res.json();
+  if (!res.ok || !json?.data?.voice_clone_id) {
+    throw new Error(`HeyGen voice clone failed: ${JSON.stringify(json)}`);
+  }
+  return json.data.voice_clone_id;
+}
+
+async function waitForVoiceClone(voiceCloneId, { intervalMs = 5000, timeoutMs = 3 * 60 * 1000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await fetch(`https://api.heygen.com/v3/voices/${voiceCloneId}`, {
+      headers: { "x-api-key": HEYGEN_API_KEY },
+    });
+    const json = await res.json();
+    const status = json?.data?.status;
+    if (status === "complete") return voiceCloneId;
+    if (status === "failed") throw new Error(`HeyGen voice clone failed: ${JSON.stringify(json)}`);
+    await new Promise((r) => setTimeout(r, intervalMs));
+  }
+  throw new Error("HeyGen voice clone timed out");
+}
+
+export async function cloneVoiceFromAudio(audioBuffer) {
+  const assetId = await uploadAudioAsset(audioBuffer);
+  const voiceCloneId = await cloneVoice(assetId);
+  return waitForVoiceClone(voiceCloneId);
+}
+
+async function createVideo({ assetId, text, voiceId }) {
   const res = await fetch("https://api.heygen.com/v3/videos", {
     method: "POST",
     headers: { "x-api-key": HEYGEN_API_KEY, "Content-Type": "application/json" },
@@ -22,7 +75,7 @@ async function createVideo({ assetId, text }) {
       type: "image",
       image: { type: "asset_id", asset_id: assetId },
       script: text,
-      voice_id: DEFAULT_VOICE_ID,
+      voice_id: voiceId || DEFAULT_VOICE_ID,
       resolution: "1080p",
       aspect_ratio: "auto",
     }),
@@ -49,11 +102,11 @@ async function waitForVideo(videoId, { intervalMs = 8000, timeoutMs = 5 * 60 * 1
   throw new Error("HeyGen video generation timed out");
 }
 
-export async function generateGreetingVideo({ photoBuffer, text }) {
+export async function generateGreetingVideo({ photoBuffer, text, voiceId }) {
   if (!HEYGEN_API_KEY) {
     throw new Error("HEYGEN_API_KEY не задан — добавь его через /settings");
   }
   const assetId = await uploadImageAsset(photoBuffer);
-  const videoId = await createVideo({ assetId, text });
+  const videoId = await createVideo({ assetId, text, voiceId });
   return waitForVideo(videoId);
 }
