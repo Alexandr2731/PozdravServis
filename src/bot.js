@@ -1,5 +1,8 @@
+import { createServer } from "node:http";
 import { Telegraf, Scenes, session, Markup } from "telegraf";
 import { greetingWizard } from "./scenes/greeting.js";
+
+createServer((_req, res) => res.end("ok")).listen(process.env.PORT || 3000);
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
 const stage = new Scenes.Stage([greetingWizard]);
@@ -49,3 +52,6 @@ bot.telegram.setMyCommands([
 ]);
 
 bot.launch();
+
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
+process.once("SIGINT", () => bot.stop("SIGINT"));
