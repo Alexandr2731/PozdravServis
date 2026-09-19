@@ -1,11 +1,12 @@
 import { createServer } from "node:http";
 import { Telegraf, Scenes, session, Markup } from "telegraf";
 import { greetingWizard } from "./scenes/greeting.js";
+import { songWizard } from "./scenes/song.js";
 
 createServer((_req, res) => res.end("ok")).listen(process.env.PORT || 3000);
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
-const stage = new Scenes.Stage([greetingWizard]);
+const stage = new Scenes.Stage([greetingWizard, songWizard]);
 
 bot.use(session());
 bot.use(stage.middleware());
@@ -40,7 +41,7 @@ bot.action("service:video", async (ctx) => {
 
 bot.action("service:song", async (ctx) => {
   await ctx.answerCbQuery();
-  await ctx.reply("Именная песня + клип пока в разработке, скоро будет доступна.");
+  return ctx.scene.enter("song-wizard");
 });
 
 bot.help((ctx) =>
