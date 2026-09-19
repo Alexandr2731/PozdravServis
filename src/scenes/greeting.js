@@ -1,24 +1,8 @@
 import { Scenes, Markup } from "telegraf";
 import { generateGreetingVideo, cloneVoiceFromAudio } from "../services/heygen.js";
+import { generateGreetingText, transcribeVoice } from "../services/openai.js";
 import { convertOggToMp3 } from "../utils/audio.js";
-
-const OCCASIONS = [
-  ["birthday", "🎂 День рождения"],
-  ["newyear", "🎄 Новый год"],
-  ["march8", "💐 8 Марта"],
-  ["feb23", "🎖 23 Февраля"],
-  ["feb14", "❤️ 14 Февраля"],
-  ["wedding", "💍 Свадьба / годовщина"],
-  ["birth", "👶 Рождение ребёнка"],
-  ["graduation", "🎓 Выпускной"],
-  ["love", "💌 Признание в любви"],
-  ["other", "✨ Без повода / другое"],
-];
-
-const occasionKeyboard = Markup.inlineKeyboard(
-  OCCASIONS.map(([code, label]) => Markup.button.callback(label, `occasion:${code}`)),
-  { columns: 2 }
-);
+import { occasionKeyboard, occasionLabel } from "../constants/occasions.js";
 
 const textSourceKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("✍️ У меня свой текст", "textsrc:own"),
@@ -34,6 +18,13 @@ const voiceKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("🔊 Стандартный голос", "voice:default"),
 ]);
 
+async function transcribeIfVoice(ctx, voice) {
+  const voiceFileLink = await ctx.telegram.getFileLink(voice.file_id);
+  const oggBuffer = Buffer.from(await (await fetch(voiceFileLink.href)).arrayBuffer());
+  const mp3Buffer = await convertOggToMp3(oggBuffer);
+  return transcribeVoice(mp3Buffer);
+}
+
 export const greetingWizard = new Scenes.WizardScene(
   "greeting-wizard",
   (ctx) => {
@@ -46,8 +37,7 @@ export const greetingWizard = new Scenes.WizardScene(
       ctx.reply("Выбери повод кнопкой выше.");
       return;
     }
-    const label = OCCASIONS.find(([c]) => c === code)?.[1] ?? code;
-    ctx.wizard.state.occasion = label;
+    ctx.wizard.state.occasion = occasionLabel(code);
     await ctx.answerCbQuery();
     await ctx.reply("У тебя уже есть текст или стих поздравления, или помочь его написать?", textSourceKeyboard);
     return ctx.wizard.next();
@@ -58,25 +48,37 @@ export const greetingWizard = new Scenes.WizardScene(
       ctx.reply("Выбери кнопкой выше.");
       return;
     }
+    ctx.wizard.state.textMode = choice;
     await ctx.answerCbQuery();
     if (choice === "help") {
-      await ctx.reply(
-        "Автоматическое написание текста/стиха пока в разработке — скоро будет доступно.\n\n" +
-          "А пока пришли, пожалуйста, свой текст поздравления."
-      );
+      await ctx.reply("Расскажи о человеке, кого поздравляем: имя, что любит, за что цените.");
     } else {
-      await ctx.reply("Пришли текст поздравления.");
+      await ctx.reply("Пришли текст поздравления — текстом или голосовым сообщением.");
     }
     return ctx.wizard.next();
   },
-  (ctx) => {
-    const text = ctx.message?.text;
-    if (!text) {
-      ctx.reply("Нужен текст поздравления. Попробуй ещё раз.");
+  async (ctx) => {
+    const typed = ctx.message?.text;
+    const voice = ctx.message?.voice;
+    if (!typed && !voice) {
+      ctx.reply("Пришли текст или голосовое сообщение.");
       return;
     }
-    ctx.wizard.state.text = text;
-    ctx.reply("Теперь пришли фото, которое станет основой поздравления.");
+    try {
+      if (ctx.wizard.state.textMode === "help") {
+        const personInfo = typed || (await transcribeIfVoice(ctx, voice));
+        await ctx.reply("Пишу текст поздравления...");
+        const text = await generateGreetingText({ occasion: ctx.wizard.state.occasion, personInfo });
+        ctx.wizard.state.text = text;
+        await ctx.reply(`Вот что получилось:\n\n${text}`);
+      } else {
+        ctx.wizard.state.text = typed || (await transcribeIfVoice(ctx, voice));
+      }
+    } catch (err) {
+      await ctx.reply(`Не получилось обработать: ${err.message}`);
+      return;
+    }
+    await ctx.reply("Теперь пришли фото, которое станет основой поздравления.");
     return ctx.wizard.next();
   },
   (ctx) => {
@@ -96,20 +98,14 @@ export const greetingWizard = new Scenes.WizardScene(
       return;
     }
     await ctx.answerCbQuery();
-    if (style === "cartoon") {
-      await ctx.reply(
-        "Мультяшный стиль пока в разработке — сделаем в обычном (реалистичном).\n\n" +
-          "Хочешь, чтобы поздравление звучало голосом того, кто поздравляет?\n\n" +
-          "Пришли голосовое сообщение (10-30 секунд, чётко и без шума) — или нажми кнопку, чтобы использовать стандартный голос.",
-        voiceKeyboard
-      );
-    } else {
-      await ctx.reply(
+    const prefix =
+      style === "cartoon" ? "Мультяшный стиль пока в разработке — сделаем в обычном (реалистичном).\n\n" : "";
+    await ctx.reply(
+      prefix +
         "Хочешь, чтобы поздравление звучало голосом того, кто поздравляет?\n\n" +
-          "Пришли голосовое сообщение (10-30 секунд, чётко и без шума) — или нажми кнопку, чтобы использовать стандартный голос.",
-        voiceKeyboard
-      );
-    }
+        "Пришли голосовое сообщение (10-30 секунд, чётко и без шума) — или нажми кнопку, чтобы использовать стандартный голос.",
+      voiceKeyboard
+    );
     return ctx.wizard.next();
   },
   async (ctx) => {
