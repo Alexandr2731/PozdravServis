@@ -50,3 +50,26 @@ export async function transcribeVoice(audioBuffer, filename = "voice.mp3") {
   }
   return json.text;
 }
+
+export async function stylizeCartoon(photoBuffer) {
+  if (!OPENAI_API_KEY) {
+    throw new Error("OPENAI_API_KEY не задан — добавь его через /settings");
+  }
+  const form = new FormData();
+  form.append("image", new Blob([photoBuffer], { type: "image/jpeg" }), "photo.jpg");
+  form.append("model", "gpt-image-1");
+  form.append(
+    "prompt",
+    "Redraw this person in a friendly cartoon/animation style, keep the likeness recognizable, same pose and framing."
+  );
+  const res = await fetch("https://api.openai.com/v1/images/edits", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+    body: form,
+  });
+  const json = await res.json();
+  if (!res.ok) {
+    throw new Error(`OpenAI image edit error: ${JSON.stringify(json)}`);
+  }
+  return Buffer.from(json.data[0].b64_json, "base64");
+}

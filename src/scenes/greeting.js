@@ -1,6 +1,6 @@
 import { Scenes, Markup } from "telegraf";
 import { generateGreetingVideo, cloneVoiceFromAudio } from "../services/heygen.js";
-import { generateGreetingText, transcribeVoice } from "../services/openai.js";
+import { generateGreetingText, transcribeVoice, stylizeCartoon } from "../services/openai.js";
 import { convertOggToMp3 } from "../utils/audio.js";
 import { occasionKeyboard, occasionLabel } from "../constants/occasions.js";
 

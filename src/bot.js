@@ -1,9 +1,8 @@
 import { createServer } from "node:http";
+import crypto from "node:crypto";
 import { Telegraf, Scenes, session, Markup } from "telegraf";
 import { greetingWizard } from "./scenes/greeting.js";
 import { songWizard } from "./scenes/song.js";
-
-createServer((_req, res) => res.end("ok")).listen(process.env.PORT || 3000);
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
 const stage = new Scenes.Stage([greetingWizard, songWizard]);
@@ -59,7 +58,25 @@ bot.telegram.setMyCommands([
   { command: "help", description: "Как это работает" },
 ]);
 
-bot.launch();
+// Webhook mode instead of long-polling: avoids the 409 "Conflict" errors that
+// happen when Railway briefly runs old+new containers during a rolling deploy —
+// with polling both would fight over getUpdates, with webhooks Telegram just
+// pushes to whichever instance is reachable.
+const WEBHOOK_SECRET = crypto.createHash("sha256").update(process.env.BOT_TOKENNP).digest("hex").slice(0, 32);
+const WEBHOOK_PATH = `/webhook/${WEBHOOK_SECRET}`;
+const PORT = process.env.PORT || 3000;
+const PUBLIC_DOMAIN = process.env.RAILWAY_PUBLIC_DOMAIN || "na-pamyat-d-bot-production.up.railway.app";
+
+const webhookHandler = bot.webhookCallback(WEBHOOK_PATH);
+
+createServer((req, res) => {
+  if (req.url === WEBHOOK_PATH) return webhookHandler(req, res);
+  res.end("ok");
+}).listen(PORT);
+
+bot.telegram.setWebhook(`https://${PUBLIC_DOMAIN}${WEBHOOK_PATH}`).catch((err) => {
+  console.error("setWebhook failed:", err.message);
+});
 
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
 process.once("SIGINT", () => bot.stop("SIGINT"));
