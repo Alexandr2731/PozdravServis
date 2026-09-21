@@ -1,8 +1,10 @@
+import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
+
 const MUREKA_API_KEY = process.env.MUREKA_API_KEY;
 const BASE = "https://api.mureka.ai/v1";
 
 async function murekaFetch(path, options = {}) {
-  const res = await fetch(`${BASE}${path}`, {
+  const res = await fetchWithTimeout(`${BASE}${path}`, {
     ...options,
     headers: {
       Authorization: `Bearer ${MUREKA_API_KEY}`,
@@ -36,7 +38,15 @@ export async function generateSong({ lyrics, stylePrompt }) {
 export async function waitForSong(taskId, { intervalMs = 8000, timeoutMs = 6 * 60 * 1000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const json = await murekaFetch(`/song/query/${taskId}`);
+    let json;
+    try {
+      json = await murekaFetch(`/song/query/${taskId}`);
+    } catch (err) {
+      // Mureka роняет соединение при опросе статуса чаще, чем при обычных запросах —
+      // это не провал генерации, продолжаем опрашивать тот же taskId.
+      await new Promise((r) => setTimeout(r, intervalMs));
+      continue;
+    }
     const status = json?.status;
     if (status === "succeeded" || status === "complete" || json?.mp3_url) {
       return { mp3Url: json.mp3_url, videoUrl: json?.video?.video_url };

@@ -26,14 +26,18 @@ Telegram-бот и сайт работают поверх одного обще�
 ## Статус
 
 См. `knowledge/market-research-2026-09-12.md` — исследование рынка, конкурентов, юридических рисков и план по этапам.
+См. `knowledge/best-of-den-rozhdeniya-2026-09-21.md` — что перенесено сюда после сравнения с параллельным проектом den-rozhdeniya (2026-09-21). Решено: этот репозиторий (na-pamyat-d) остаётся основным, второй архивируется.
 
-Текущий этап: Этап 0 (юр.основа) — Александр оформляет ОКВЭД и регистрацию оператора ПДн.
+**⚠️ Открытый вопрос по бренду:** бот сейчас `@TITAL_NAPAMYAT_bot` (задеплоен, работает). В параллельном проекте закреплено имя "НаПамять" + слоган "Просто подари" + бот `@napamyat_gifts_bot`. Нужно решение Александра — остаёмся на текущем боте или переключаемся.
+
+Бот задеплоен на Railway (проект splendid-contentment, сервис na-pamyat-d-bot), работает через webhook.
 
 Сделано агентом:
 - Черновик оферты/согласий: `knowledge/oferta-draft-2026-09-12.md`
-- Скелет Telegram-бота: `src/bot.js`, `src/scenes/greeting.js` (сценарий сбора фото+текста для Услуги 1), `src/services/heygen.js` (заглушка под реальный вызов API)
+- Telegram-бот на telegraf: `src/bot.js`, сцены `src/scenes/greeting.js` (Услуга 1) и `src/scenes/song.js` (Услуга 2)
+- Интеграции: `src/services/heygen.js` (видео-аватар, voice clone), `src/services/mureka.js` (песня), `src/services/openai.js` (текст поздравления, транскрибация голоса, стилизация фото под мультяшный стиль)
+- `src/utils/fetchWithTimeout.js` — все внешние вызовы защищены тайм-аутом (2026-09-21, находка из den-rozhdeniya)
 
 Заблокировано до появления доступов:
-- BOT_TOKEN нового бота (создать через @BotFather)
-- HEYGEN_API_KEY или D-ID API key — для реального теста генерации видео
-- MUREKA API key — для Услуги 2 (песня)
+- HEYGEN_API_KEY / MUREKA_API_KEY / OPENAI_API_KEY — часть уже проверена живыми тестами (см. market-research), часть ждёт ключей
+- YOOKASSA_SHOP_ID / YOOKASSA_SECRET_KEY — оплата

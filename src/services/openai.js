@@ -1,10 +1,12 @@
+import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
+
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 export async function generateGreetingText({ occasion, personInfo }) {
   if (!OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY не задан — добавь его через /settings");
   }
-  const res = await fetch("https://api.openai.com/v1/chat/completions", {
+  const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
       Authorization: `Bearer ${OPENAI_API_KEY}`,
@@ -39,7 +41,7 @@ export async function transcribeVoice(audioBuffer, filename = "voice.mp3") {
   form.append("file", new Blob([audioBuffer], { type: "audio/mpeg" }), filename);
   form.append("model", "whisper-1");
   form.append("language", "ru");
-  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+  const res = await fetchWithTimeout("https://api.openai.com/v1/audio/transcriptions", {
     method: "POST",
     headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
     body: form,
@@ -62,11 +64,15 @@ export async function stylizeCartoon(photoBuffer) {
     "prompt",
     "Redraw this person in a friendly cartoon/animation style, keep the likeness recognizable, same pose and framing."
   );
-  const res = await fetch("https://api.openai.com/v1/images/edits", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
-    body: form,
-  });
+  const res = await fetchWithTimeout(
+    "https://api.openai.com/v1/images/edits",
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${OPENAI_API_KEY}` },
+      body: form,
+    },
+    60000
+  );
   const json = await res.json();
   if (!res.ok) {
     throw new Error(`OpenAI image edit error: ${JSON.stringify(json)}`);

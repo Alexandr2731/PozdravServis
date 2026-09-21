@@ -1,8 +1,10 @@
+import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
+
 const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY;
 const DEFAULT_VOICE_ID = "ba1544b5eae84eae9cb92598f078b6b0"; // Oleg, russian male
 
 async function uploadImageAsset(photoBuffer) {
-  const res = await fetch("https://upload.heygen.com/v1/asset", {
+  const res = await fetchWithTimeout("https://upload.heygen.com/v1/asset", {
     method: "POST",
     headers: { "x-api-key": HEYGEN_API_KEY, "Content-Type": "image/jpeg" },
     body: photoBuffer,
@@ -17,7 +19,7 @@ async function uploadImageAsset(photoBuffer) {
 async function uploadAudioAsset(audioBuffer) {
   const form = new FormData();
   form.append("file", new Blob([audioBuffer], { type: "audio/mpeg" }), "voice.mp3");
-  const res = await fetch("https://api.heygen.com/v3/assets", {
+  const res = await fetchWithTimeout("https://api.heygen.com/v3/assets", {
     method: "POST",
     headers: { "x-api-key": HEYGEN_API_KEY },
     body: form,
@@ -30,7 +32,7 @@ async function uploadAudioAsset(audioBuffer) {
 }
 
 async function cloneVoice(audioAssetId) {
-  const res = await fetch("https://api.heygen.com/v3/voices/clone", {
+  const res = await fetchWithTimeout("https://api.heygen.com/v3/voices/clone", {
     method: "POST",
     headers: { "x-api-key": HEYGEN_API_KEY, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -49,7 +51,7 @@ async function cloneVoice(audioAssetId) {
 async function waitForVoiceClone(voiceCloneId, { intervalMs = 5000, timeoutMs = 3 * 60 * 1000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const res = await fetch(`https://api.heygen.com/v3/voices/${voiceCloneId}`, {
+    const res = await fetchWithTimeout(`https://api.heygen.com/v3/voices/${voiceCloneId}`, {
       headers: { "x-api-key": HEYGEN_API_KEY },
     });
     const json = await res.json();
@@ -68,7 +70,7 @@ export async function cloneVoiceFromAudio(audioBuffer) {
 }
 
 async function createVideo({ assetId, text, voiceId }) {
-  const res = await fetch("https://api.heygen.com/v3/videos", {
+  const res = await fetchWithTimeout("https://api.heygen.com/v3/videos", {
     method: "POST",
     headers: { "x-api-key": HEYGEN_API_KEY, "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -90,7 +92,7 @@ async function createVideo({ assetId, text, voiceId }) {
 async function waitForVideo(videoId, { intervalMs = 8000, timeoutMs = 5 * 60 * 1000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const res = await fetch(`https://api.heygen.com/v3/videos/${videoId}`, {
+    const res = await fetchWithTimeout(`https://api.heygen.com/v3/videos/${videoId}`, {
       headers: { "x-api-key": HEYGEN_API_KEY },
     });
     const json = await res.json();
