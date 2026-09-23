@@ -201,11 +201,12 @@ export const greetingWizard = new Scenes.WizardScene(
       return; // остаёмся на этом шаге
     }
 
-    if (ctx.wizard.state.awaitingTextFeedback && ctx.message?.text) {
-      ctx.wizard.state.personInfo = `${ctx.wizard.state.personInfo}\n\nПравка от клиента: ${ctx.message.text}`;
-      ctx.wizard.state.awaitingTextFeedback = false;
-      await ctx.reply("Переписываю, снова два варианта...");
+    if (ctx.wizard.state.awaitingTextFeedback && (ctx.message?.text || ctx.message?.voice)) {
       try {
+        const feedback = ctx.message.text || (await transcribeIfVoice(ctx, ctx.message.voice));
+        ctx.wizard.state.personInfo = `${ctx.wizard.state.personInfo}\n\nПравка от клиента: ${feedback}`;
+        ctx.wizard.state.awaitingTextFeedback = false;
+        await ctx.reply("Переписываю, снова два варианта...");
         await generateAndShowVariants(ctx);
       } catch (err) {
         await ctx.reply(`Не получилось переписать: ${err.message}`);
