@@ -3,6 +3,7 @@ import { generateGreetingVideo, cloneVoiceFromAudio } from "./heygen.js";
 import { stylizeCartoon } from "./openai.js";
 import { convertOggToMp3 } from "../utils/audio.js";
 import { updateOrder } from "../utils/orderStore.js";
+import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 
 // Отделено от greeting.js: вызывается из вебхука ЮKassa в bot.js после оплаты — там нет
 // доступа к Telegraf wizard.state, заказ уже вне сцены к этому моменту.
@@ -23,8 +24,11 @@ function reviewKeyboard(orderId) {
 
 /** Генерирует видео по уже оплаченному заказу и присылает клиенту с кнопками отзыва. */
 export async function fulfillGreetingOrder(bot, order) {
+  // fetchWithTimeout, не голый fetch — скачивание с серверов Telegram иногда зависает
+  // посреди запроса на этой инфраструктуре (см. тот же фикс в greeting.js, найдено живым
+  // тестом 23.09.2026).
   const photoFileLink = await bot.telegram.getFileLink(order.photoFileId);
-  let photoBuffer = Buffer.from(await (await fetch(photoFileLink.href)).arrayBuffer());
+  let photoBuffer = Buffer.from(await (await fetchWithTimeout(photoFileLink.href, {})).arrayBuffer());
 
   // Мультяшный стиль — подключено и тестируется 23.09.2026 (было заглушкой "в разработке").
   // Отдельный платный вызов OpenAI (gpt-image-1) поверх HeyGen — стоимость учитывать отдельно
@@ -36,7 +40,7 @@ export async function fulfillGreetingOrder(bot, order) {
   let voiceId;
   if (order.voiceFileId) {
     const voiceFileLink = await bot.telegram.getFileLink(order.voiceFileId);
-    const oggBuffer = Buffer.from(await (await fetch(voiceFileLink.href)).arrayBuffer());
+    const oggBuffer = Buffer.from(await (await fetchWithTimeout(voiceFileLink.href, {})).arrayBuffer());
     const mp3Buffer = await convertOggToMp3(oggBuffer);
     voiceId = await cloneVoiceFromAudio(mp3Buffer);
   }

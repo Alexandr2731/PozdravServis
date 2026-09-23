@@ -2,6 +2,7 @@ import { Scenes, Markup } from "telegraf";
 import { generateGreetingText, transcribeVoice, stylizeCartoon } from "../services/openai.js";
 import { createPayment } from "../services/yookassa.js";
 import { convertOggToMp3 } from "../utils/audio.js";
+import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import { occasionKeyboard, occasionLabel } from "../constants/occasions.js";
 import { createOrder, updateOrder } from "../utils/orderStore.js";
 
@@ -78,7 +79,10 @@ const voiceKeyboard = Markup.inlineKeyboard([
 
 async function transcribeIfVoice(ctx, voice) {
   const voiceFileLink = await ctx.telegram.getFileLink(voice.file_id);
-  const oggBuffer = Buffer.from(await (await fetch(voiceFileLink.href)).arrayBuffer());
+  // fetchWithTimeout, не голый fetch — скачивание с серверов Telegram иногда зависает
+  // посреди запроса на этой инфраструктуре (найдено живым тестом 23.09.2026: голосовая
+  // правка текста висела минутами, без единой ошибки в логах).
+  const oggBuffer = Buffer.from(await (await fetchWithTimeout(voiceFileLink.href, {})).arrayBuffer());
   const mp3Buffer = await convertOggToMp3(oggBuffer);
   return transcribeVoice(mp3Buffer);
 }
