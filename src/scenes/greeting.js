@@ -1,8 +1,28 @@
 import { Scenes, Markup } from "telegraf";
-import { generateGreetingVideo, cloneVoiceFromAudio } from "../services/heygen.js";
 import { generateGreetingText, transcribeVoice, stylizeCartoon } from "../services/openai.js";
+import { createPayment } from "../services/yookassa.js";
 import { convertOggToMp3 } from "../utils/audio.js";
 import { occasionKeyboard, occasionLabel } from "../constants/occasions.js";
+import { createOrder, updateOrder } from "../utils/orderStore.js";
+
+// Цена НЕ зашита числом сознательно — себестоимость (реальный тариф HeyGen на минуту
+// видео) ещё не подтверждена (см. knowledge/discovery-2026-09-23/01-cost-reconciliation.md),
+// поэтому цену задаёт переменная окружения, а не код: без неё бот честно падает с
+// понятной ошибкой при попытке создать платёж, а не продаёт по случайному числу.
+function greetingPriceRub() {
+  const raw = process.env.GREETING_PRICE_RUB;
+  if (!raw) {
+    throw new Error(
+      "GREETING_PRICE_RUB не задан — цена ещё не определена (себестоимость не подтверждена), " +
+        "оплату включать нельзя без явного значения"
+    );
+  }
+  const price = Number(raw);
+  if (!Number.isFinite(price) || price <= 0) {
+    throw new Error(`GREETING_PRICE_RUB задан некорректно: "${raw}"`);
+  }
+  return price;
+}
 
 const textSourceKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("✍️ У меня свой текст", "textsrc:own"),
@@ -12,6 +32,16 @@ const textSourceKeyboard = Markup.inlineKeyboard([
 const styleKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("🎥 Обычный (реалистичный)", "style:realistic"),
   Markup.button.callback("🎨 Мультяшный", "style:cartoon"),
+]);
+
+// Реалистичное "оживление" фото с посторонними людьми (не самим заказчиком) без их
+// согласия — этический/юридический риск (по сути deepfake человека, который ничего не
+// разрешал). Мультяшный стиль пока тоже фактически подменяется реалистичным (см. ниже),
+// поэтому пока безопасного варианта для таких фото просто нет — честно говорим об этом,
+// а не генерируем молча.
+const othersOnPhotoKeyboard = Markup.inlineKeyboard([
+  Markup.button.callback("Нет, только тот, кого поздравляем", "others:no"),
+  Markup.button.callback("Да, есть ещё кто-то", "others:yes"),
 ]);
 
 const voiceKeyboard = Markup.inlineKeyboard([
@@ -88,7 +118,30 @@ export const greetingWizard = new Scenes.WizardScene(
       return;
     }
     ctx.wizard.state.photoFileId = photo.file_id;
-    ctx.reply("В каком стиле сделать видео?", styleKeyboard);
+    ctx.reply("Кроме того, кого поздравляем, на фото есть ещё кто-то?", othersOnPhotoKeyboard);
+    return ctx.wizard.next();
+  },
+  async (ctx) => {
+    const answer = ctx.callbackQuery?.data?.split(":")[1];
+    if (!answer) {
+      ctx.reply("Ответь кнопкой выше.");
+      return;
+    }
+    await ctx.answerCbQuery();
+    if (answer === "yes") {
+      // Пока мультяшный стиль не готов (см. следующий шаг), безопасной генерации для
+      // фото с посторонними людьми просто нет — не делаем молча, объясняем и просим
+      // другое фото, вместо того чтобы сгенерировать реалистичное видео без их согласия.
+      await ctx.reply(
+        "Пока мы не можем обработать фото, где кроме поздравляемого есть кто-то ещё — " +
+          "«оживление» фото в реалистичном стиле без согласия всех, кто на нём есть, мы не делаем.\n\n" +
+          "Пришли, пожалуйста, фото, где только тот, кого поздравляем — или начни заново командой /start, " +
+          "если хочешь выбрать другой формат поздравления."
+      );
+      return ctx.scene.leave();
+    }
+    ctx.wizard.state.includesOthers = false;
+    await ctx.reply("В каком стиле сделать видео?", styleKeyboard);
     return ctx.wizard.next();
   },
   async (ctx) => {
@@ -116,28 +169,54 @@ export const greetingWizard = new Scenes.WizardScene(
       return;
     }
     if (isSkip) await ctx.answerCbQuery();
+    if (voice) ctx.wizard.state.voiceFileId = voice.file_id;
 
-    await ctx.reply("Собираю поздравление, это займёт пару минут...");
+    await ctx.reply("Последний шаг — на какой email прислать чек за оплату?");
+    return ctx.wizard.next();
+  },
+  // Оплата — генерация начинается только после подтверждённого платежа (см. вебхук в
+  // bot.js), а не сразу здесь. До этого шага не тратим ни рубля на HeyGen — ни фото не
+  // грузим как asset, ни голос не клонируем — на случай, если клиент вообще не оплатит.
+  async (ctx) => {
+    const email = ctx.message?.text?.trim();
+    if (!email || !email.includes("@")) {
+      ctx.reply("Похоже, это не email. Пришли ещё раз.");
+      return;
+    }
+
+    let price;
     try {
-      const fileLink = await ctx.telegram.getFileLink(ctx.wizard.state.photoFileId);
-      const photoBuffer = Buffer.from(await (await fetch(fileLink.href)).arrayBuffer());
-
-      let voiceId;
-      if (voice) {
-        const voiceFileLink = await ctx.telegram.getFileLink(voice.file_id);
-        const oggBuffer = Buffer.from(await (await fetch(voiceFileLink.href)).arrayBuffer());
-        const mp3Buffer = await convertOggToMp3(oggBuffer);
-        voiceId = await cloneVoiceFromAudio(mp3Buffer);
-      }
-
-      const videoUrl = await generateGreetingVideo({
-        photoBuffer,
-        text: ctx.wizard.state.text,
-        voiceId,
-      });
-      await ctx.replyWithVideo(videoUrl, { caption: "Готово! Вот твоё поздравление 🎉" });
+      price = greetingPriceRub();
     } catch (err) {
-      await ctx.reply(`Не получилось создать видео: ${err.message}`);
+      await ctx.reply(`Оплата пока недоступна: ${err.message}. Попробуй позже.`);
+      return ctx.scene.leave();
+    }
+
+    const orderId = createOrder({
+      chatId: ctx.chat.id,
+      userId: String(ctx.from.id),
+      occasion: ctx.wizard.state.occasion,
+      text: ctx.wizard.state.text,
+      photoFileId: ctx.wizard.state.photoFileId,
+      voiceFileId: ctx.wizard.state.voiceFileId,
+      priceRub: price,
+      status: "awaiting_payment",
+    });
+
+    try {
+      const { paymentId, confirmationUrl } = await createPayment({
+        amountRub: price,
+        description: `PozdravServis — анимированное поздравление (заказ ${orderId})`,
+        returnUrl: `https://t.me/${(await ctx.telegram.getMe()).username}`,
+        customer: { email },
+      });
+      updateOrder(orderId, { paymentId });
+
+      await ctx.reply(
+        `Стоимость: ${price} ₽.\n\nОплати по ссылке — после оплаты пришлю готовое видео сюда же, обычно в течение пары минут:\n${confirmationUrl}`
+      );
+    } catch (err) {
+      await ctx.reply(`Не получилось создать платёж: ${err.message}. Попробуй ещё раз позже.`);
     }
     return ctx.scene.leave();
   }

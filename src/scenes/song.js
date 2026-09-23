@@ -1,6 +1,20 @@
-import { Scenes } from "telegraf";
+import { Scenes, Markup } from "telegraf";
 import { occasionKeyboard, occasionLabel } from "../constants/occasions.js";
 import { generateLyrics, generateSong, waitForSong } from "../services/mureka.js";
+
+const lyricsReviewKeyboard = Markup.inlineKeyboard([
+  Markup.button.callback("✅ Всё нравится, делай музыку", "lyrics:ok"),
+  Markup.button.callback("✏️ Поправить текст", "lyrics:edit"),
+]);
+
+function buildLyricsPrompt({ occasion, personInfo, style }, feedback) {
+  const base =
+    `Напиши текст поздравительной песни на русском языке.\n` +
+    `Повод: ${occasion}.\n` +
+    `О человеке: ${personInfo}.\n` +
+    `Стиль/настроение: ${style}.`;
+  return feedback ? `${base}\n\nПравка от клиента к предыдущему варианту: ${feedback}` : base;
+}
 
 export const songWizard = new Scenes.WizardScene(
   "song-wizard",
@@ -42,24 +56,62 @@ export const songWizard = new Scenes.WizardScene(
     ctx.wizard.state.style = style;
     await ctx.reply("Пишу текст песни...");
     try {
-      const lyricsPrompt =
-        `Напиши текст поздравительной песни на русском языке.\n` +
-        `Повод: ${ctx.wizard.state.occasion}.\n` +
-        `О человеке: ${ctx.wizard.state.personInfo}.\n` +
-        `Стиль/настроение: ${style}.`;
-      const lyrics = await generateLyrics(lyricsPrompt);
+      const lyrics = await generateLyrics(buildLyricsPrompt(ctx.wizard.state));
       ctx.wizard.state.lyrics = lyrics;
-      await ctx.reply(`Вот текст песни:\n\n${lyrics}\n\nСобираю музыку, это займёт пару минут...`);
-
-      const taskId = await generateSong({ lyrics, stylePrompt: style });
-      const { mp3Url, videoUrl } = await waitForSong(taskId);
-
-      if (mp3Url) await ctx.replyWithAudio(mp3Url, { caption: "Готово! Вот твоя песня 🎵" });
-      if (videoUrl) await ctx.replyWithVideo(videoUrl, { caption: "И клип к ней 🎬" });
-      if (!mp3Url && !videoUrl) await ctx.reply("Песня сгенерирована, но не удалось получить файл.");
+      await ctx.reply(`Вот текст песни:\n\n${lyrics}`, lyricsReviewKeyboard);
     } catch (err) {
-      await ctx.reply(`Не получилось создать песню: ${err.message}`);
+      await ctx.reply(`Не получилось написать текст: ${err.message}`);
+      return ctx.scene.leave();
     }
-    return ctx.scene.leave();
+    return ctx.wizard.next();
+  },
+  // Одобрение текста ПЕРЕД платной генерацией музыки (Mureka) — текст можно править
+  // сколько угодно раз бесплатно, музыка генерируется только после явного "нравится".
+  // Раньше музыка запускалась сразу же после показа текста, без этого шага.
+  async (ctx) => {
+    const action = ctx.callbackQuery?.data?.split(":")[1];
+
+    if (action === "edit") {
+      await ctx.answerCbQuery();
+      await ctx.reply("Что поправить в тексте? Опиши свободно.");
+      ctx.wizard.state.awaitingLyricsFeedback = true;
+      return; // остаёмся на этом же шаге, ждём текст с правкой
+    }
+
+    if (action === "ok") {
+      await ctx.answerCbQuery();
+      await ctx.reply("Собираю музыку, это займёт пару минут...");
+      try {
+        const taskId = await generateSong({ lyrics: ctx.wizard.state.lyrics, stylePrompt: ctx.wizard.state.style });
+        const { choices } = await waitForSong(taskId);
+
+        // Mureka отдаёт 2 варианта — показываем оба, а не только первый (раньше второй
+        // терялся). Полноценный выбор варианта клиентом + бесплатный передел — часть
+        // ещё не готовой механики оплаты (см. критический разбор плана), пока просто
+        // не выбрасываем то, за что уже заплачен вызов Mureka.
+        for (const [i, choice] of choices.entries()) {
+          await ctx.replyWithAudio(choice.mp3Url, { caption: `Вариант ${i + 1} из ${choices.length} 🎵` });
+        }
+      } catch (err) {
+        await ctx.reply(`Не получилось создать песню: ${err.message}`);
+      }
+      return ctx.scene.leave();
+    }
+
+    if (ctx.wizard.state.awaitingLyricsFeedback && ctx.message?.text) {
+      const feedback = ctx.message.text;
+      ctx.wizard.state.awaitingLyricsFeedback = false;
+      await ctx.reply("Переписываю текст с учётом правки...");
+      try {
+        const lyrics = await generateLyrics(buildLyricsPrompt(ctx.wizard.state, feedback));
+        ctx.wizard.state.lyrics = lyrics;
+        await ctx.reply(`Вот обновлённый текст:\n\n${lyrics}`, lyricsReviewKeyboard);
+      } catch (err) {
+        await ctx.reply(`Не получилось переписать текст: ${err.message}`);
+      }
+      return; // остаёмся на этом же шаге, снова ждём "ok"/"edit"
+    }
+
+    ctx.reply("Выбери кнопкой выше: текст устраивает, или его нужно поправить.");
   }
 );

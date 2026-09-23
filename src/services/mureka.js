@@ -35,6 +35,11 @@ export async function generateSong({ lyrics, stylePrompt }) {
   return json.id;
 }
 
+// Статусы "ещё не готово" по факту (подтверждено живым тестом в den-rozhdeniya
+// 07.09.2026) — считаем готовым всё, что НЕ входит в этот список, а не наоборот, чтобы
+// не зависнуть навсегда на незнакомом статусе.
+const MUREKA_IN_PROGRESS_STATUSES = ["preparing", "queued", "running", "streaming"];
+
 export async function waitForSong(taskId, { intervalMs = 8000, timeoutMs = 6 * 60 * 1000 } = {}) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -48,11 +53,24 @@ export async function waitForSong(taskId, { intervalMs = 8000, timeoutMs = 6 * 6
       continue;
     }
     const status = json?.status;
-    if (status === "succeeded" || status === "complete" || json?.mp3_url) {
-      return { mp3Url: json.mp3_url, videoUrl: json?.video?.video_url };
-    }
-    if (status === "failed") {
-      throw new Error(`Mureka song generation failed: ${JSON.stringify(json)}`);
+    if (!MUREKA_IN_PROGRESS_STATUSES.includes(status)) {
+      if (status !== "succeeded" || !json?.choices?.length) {
+        throw new Error(`Mureka song generation ended with status "${status}": ${JSON.stringify(json)}`);
+      }
+      // Mureka по умолчанию отдаёт 2 варианта на одну генерацию (подтверждено живым
+      // тестом) — раньше здесь бралось только json.mp3_url/json.video.video_url, второй
+      // вариант молча терялся. lyrics_sections — тайминги по словам, уже готовые для
+      // будущего караоке, отдельный STT-этап не нужен. "video" Mureka не отдаёт — клип
+      // делается отдельно (HeyGen), это не то же самое, что песня.
+      return {
+        choices: json.choices.map((c) => ({
+          mp3Url: c.url,
+          flacUrl: c.flac_url,
+          wavUrl: c.wav_url,
+          durationMs: c.duration,
+          lyricsSections: c.lyrics_sections ?? [],
+        })),
+      };
     }
     await new Promise((r) => setTimeout(r, intervalMs));
   }
