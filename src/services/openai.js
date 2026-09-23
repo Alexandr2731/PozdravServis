@@ -10,12 +10,16 @@ export async function generateGreetingText({ occasion, personInfo, style = "pros
   if (!OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY не задан — добавь его через /settings");
   }
+  // ~75 слов — ориентир на 30 секунд озвучки в видео (обычная русская речь ~2.5 слова/сек,
+  // см. greeting.js MAX_GREETING_TEXT_WORDS). Дольше — дороже в генерации видео, чем
+  // заложено в цену.
+  const lengthInstruction = "Уложись примерно в 75 слов (не больше) — поздравление рассчитано на ~30 секунд озвучки.";
   const systemPrompt =
     style === "poem"
       ? "Ты пишешь тёплые, живые поздравления в стихах на русском языке. Настоящие стихи с рифмой и ритмом " +
-        "(не рифмованная проза) — 4-8 строк, без клише и канцелярита."
+        `(не рифмованная проза) — 4-8 строк, без клише и канцелярита. ${lengthInstruction}`
       : "Ты пишешь тёплые, живые поздравления на русском языке. Обычный текст, НЕ стихи, без рифмы — 4-8 строк, " +
-        "без клише и канцелярита.";
+        `без клише и канцелярита. ${lengthInstruction}`;
   const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {

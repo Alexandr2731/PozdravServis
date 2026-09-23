@@ -24,6 +24,18 @@ function greetingPriceRub() {
   return price;
 }
 
+// Длительность ролика ограничена ориентиром 30 секунд (решено 23.09.2026, голосом,
+// Александр — на этой длительности и HeyGen-себестоимость, и сравнение цены с BroHit
+// нормально сходятся, см. knowledge/discovery-2026-09-23/01-cost-reconciliation.md).
+// ~2.5 слова/сек обычной русской речи -> 30с ≈ 75 слов. Для "своего текста" это жёсткое
+// ограничение (иначе реальная длительность/себестоимость видео уедет далеко за
+// заложенную в цену), для ИИ-генерации — целевой ориентир в самом промпте (openai.js).
+const MAX_GREETING_TEXT_WORDS = 75;
+
+function countWords(text) {
+  return text.trim().split(/\s+/).filter(Boolean).length;
+}
+
 const videoStyleKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("🎥 Обычный (реалистичный)", "style:realistic"),
   Markup.button.callback("🎨 Мультяшный", "style:cartoon"),
@@ -217,17 +229,31 @@ export const greetingWizard = new Scenes.WizardScene(
       ctx.reply("Пришли текст или голосовое сообщение.");
       return;
     }
+    let text;
+    let voiceFileId;
     try {
       if (voice) {
-        ctx.wizard.state.voiceFileId = voice.file_id;
-        ctx.wizard.state.text = await transcribeIfVoice(ctx, voice);
+        voiceFileId = voice.file_id;
+        text = await transcribeIfVoice(ctx, voice);
       } else {
-        ctx.wizard.state.text = typed;
+        text = typed;
       }
     } catch (err) {
       await ctx.reply(`Не получилось обработать: ${err.message}`);
       return;
     }
+
+    const words = countWords(text);
+    if (words > MAX_GREETING_TEXT_WORDS) {
+      await ctx.reply(
+        `Текст длинноват для короткого видео-поздравления (~30 секунд) — сейчас примерно ${words} слов, ` +
+          `уложись в ${MAX_GREETING_TEXT_WORDS}. Пришли покороче — текстом или голосовым.`
+      );
+      return; // остаёмся на этом же шаге, ждём текст ещё раз
+    }
+
+    ctx.wizard.state.text = text;
+    if (voiceFileId) ctx.wizard.state.voiceFileId = voiceFileId;
     await ctx.reply("Теперь пришли фото, которое станет основой поздравления.");
     return ctx.wizard.next();
   },
