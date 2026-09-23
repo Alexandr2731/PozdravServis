@@ -2,10 +2,17 @@ import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
-export async function generateGreetingText({ occasion, personInfo }) {
+// style: "prose" (обычный текст) | "poem" (стихи) — выбор клиента на шаге до генерации.
+export async function generateGreetingText({ occasion, personInfo, style = "prose" }) {
   if (!OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY не задан — добавь его через /settings");
   }
+  const systemPrompt =
+    style === "poem"
+      ? "Ты пишешь тёплые, живые поздравления в стихах на русском языке. Настоящие стихи с рифмой и ритмом " +
+        "(не рифмованная проза) — 4-8 строк, без клише и канцелярита."
+      : "Ты пишешь тёплые, живые поздравления на русском языке. Обычный текст, НЕ стихи, без рифмы — 4-8 строк, " +
+        "без клише и канцелярита.";
   const res = await fetchWithTimeout("https://api.openai.com/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -17,7 +24,7 @@ export async function generateGreetingText({ occasion, personInfo }) {
       messages: [
         {
           role: "system",
-          content: "Ты пишешь тёплые, живые поздравления на русском языке. Без клише и канцелярита, 4-8 строк.",
+          content: systemPrompt,
         },
         {
           role: "user",

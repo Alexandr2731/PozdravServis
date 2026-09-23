@@ -29,6 +29,11 @@ const textSourceKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("🤖 Помоги написать", "textsrc:help"),
 ]);
 
+const textStyleKeyboard = Markup.inlineKeyboard([
+  Markup.button.callback("📝 Обычный текст", "textstyle:prose"),
+  Markup.button.callback("📜 Стихи", "textstyle:poem"),
+]);
+
 const styleKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("🎥 Обычный (реалистичный)", "style:realistic"),
   Markup.button.callback("🎨 Мультяшный", "style:cartoon"),
@@ -81,10 +86,23 @@ export const greetingWizard = new Scenes.WizardScene(
     ctx.wizard.state.textMode = choice;
     await ctx.answerCbQuery();
     if (choice === "help") {
-      await ctx.reply("Расскажи о человеке, кого поздравляем: имя, что любит, за что цените.");
-    } else {
-      await ctx.reply("Пришли текст поздравления — текстом или голосовым сообщением.");
+      await ctx.reply("В каком стиле написать текст?", textStyleKeyboard);
+      return ctx.wizard.next(); // -> шаг выбора прозы/стихов
     }
+    await ctx.reply("Пришли текст поздравления — текстом или голосовым сообщением.");
+    // "Свой текст" не нуждается в выборе прозы/стихов — пропускаем этот шаг сразу к сбору текста.
+    ctx.wizard.selectStep(ctx.wizard.cursor + 2);
+  },
+  // Только для textMode === "help" — выбор до генерации, влияет на промпт в openai.js.
+  async (ctx) => {
+    const style = ctx.callbackQuery?.data?.split(":")[1];
+    if (!style) {
+      ctx.reply("Выбери кнопкой выше.");
+      return;
+    }
+    ctx.wizard.state.textStyle = style;
+    await ctx.answerCbQuery();
+    await ctx.reply("Расскажи о человеке, кого поздравляем: имя, что любит, за что цените.");
     return ctx.wizard.next();
   },
   async (ctx) => {
@@ -98,7 +116,11 @@ export const greetingWizard = new Scenes.WizardScene(
       if (ctx.wizard.state.textMode === "help") {
         const personInfo = typed || (await transcribeIfVoice(ctx, voice));
         await ctx.reply("Пишу текст поздравления...");
-        const text = await generateGreetingText({ occasion: ctx.wizard.state.occasion, personInfo });
+        const text = await generateGreetingText({
+          occasion: ctx.wizard.state.occasion,
+          personInfo,
+          style: ctx.wizard.state.textStyle,
+        });
         ctx.wizard.state.text = text;
         await ctx.reply(`Вот что получилось:\n\n${text}`);
       } else {
