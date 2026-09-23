@@ -1,5 +1,6 @@
 import { Markup } from "telegraf";
 import { generateGreetingVideo, cloneVoiceFromAudio } from "./heygen.js";
+import { stylizeCartoon } from "./openai.js";
 import { convertOggToMp3 } from "../utils/audio.js";
 import { updateOrder } from "../utils/orderStore.js";
 
@@ -23,7 +24,14 @@ function reviewKeyboard(orderId) {
 /** Генерирует видео по уже оплаченному заказу и присылает клиенту с кнопками отзыва. */
 export async function fulfillGreetingOrder(bot, order) {
   const photoFileLink = await bot.telegram.getFileLink(order.photoFileId);
-  const photoBuffer = Buffer.from(await (await fetch(photoFileLink.href)).arrayBuffer());
+  let photoBuffer = Buffer.from(await (await fetch(photoFileLink.href)).arrayBuffer());
+
+  // Мультяшный стиль — подключено и тестируется 23.09.2026 (было заглушкой "в разработке").
+  // Отдельный платный вызов OpenAI (gpt-image-1) поверх HeyGen — стоимость учитывать отдельно
+  // при определении цены для этого стиля, себестоимость выше реалистичного на эту сумму.
+  if (order.videoStyle === "cartoon") {
+    photoBuffer = await stylizeCartoon(photoBuffer);
+  }
 
   let voiceId;
   if (order.voiceFileId) {
