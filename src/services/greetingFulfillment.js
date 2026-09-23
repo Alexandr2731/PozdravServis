@@ -2,20 +2,22 @@ import { Markup } from "telegraf";
 import { generateGreetingVideo, cloneVoiceFromAudio } from "./heygen.js";
 import { convertOggToMp3 } from "../utils/audio.js";
 import { updateOrder } from "../utils/orderStore.js";
-import { hasFreeRevisionsLeft, canOfferRefund, refundAmount } from "../utils/revisionRules.js";
 
-// Отделено от greeting.js: вызывается и сразу после оплаты (из вебхука ЮKassa в bot.js —
-// там нет доступа к Telegraf wizard.state, заказ уже вне сцены), и при бесплатной
-// переделке (тоже вне сцены — кнопка "Переделать" под уже присланным видео).
+// Отделено от greeting.js: вызывается из вебхука ЮKassa в bot.js после оплаты — там нет
+// доступа к Telegraf wizard.state, заказ уже вне сцены к этому моменту.
+//
+// РЕШЕНО 2026-09-23 (голосом, Александр): без бесплатной переделки видео — HeyGen стоит
+// реальных денег за каждый прогон, в отличие от текста (GPT-4o-mini), где переделка
+// бесплатна и без ограничений. Клиент уже согласовал текст на предыдущем шаге (в greeting.js,
+// до оплаты) — единственная случайная величина, которая остаётся, это как ИИ на самом деле
+// анимировал фото. Поэтому сразу развилка: забрал результат, или отказ с возвратом половины
+// стоимости баллами — без промежуточного бесплатного передела.
 
-function reviewKeyboard(orderId, revisionCount) {
-  const buttons = [Markup.button.callback("👍 Нравится", `greeting:like:${orderId}`)];
-  if (hasFreeRevisionsLeft(revisionCount)) {
-    buttons.push(Markup.button.callback("✏️ Переделать бесплатно", `greeting:redo:${orderId}`));
-  } else if (canOfferRefund(revisionCount)) {
-    buttons.push(Markup.button.callback("💰 Вернуть баллами", `greeting:refund:${orderId}`));
-  }
-  return Markup.inlineKeyboard(buttons);
+function reviewKeyboard(orderId) {
+  return Markup.inlineKeyboard([
+    Markup.button.callback("✅ Забрать", `greeting:accept:${orderId}`),
+    Markup.button.callback("💰 Отказаться — вернуть половину баллами", `greeting:refund:${orderId}`),
+  ]);
 }
 
 /** Генерирует видео по уже оплаченному заказу и присылает клиенту с кнопками отзыва. */
@@ -33,10 +35,10 @@ export async function fulfillGreetingOrder(bot, order) {
 
   const videoUrl = await generateGreetingVideo({ photoBuffer, text: order.text, voiceId });
 
-  const updated = updateOrder(order.orderId, { variants: [...order.variants, videoUrl] });
+  updateOrder(order.orderId, { variants: [...order.variants, videoUrl] });
 
   await bot.telegram.sendVideo(order.chatId, videoUrl, {
     caption: "Готово! Вот твоё поздравление 🎉",
-    ...reviewKeyboard(order.orderId, updated.revisionCount),
+    ...reviewKeyboard(order.orderId),
   });
 }

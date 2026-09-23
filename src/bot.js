@@ -6,7 +6,7 @@ import { songWizard } from "./scenes/song.js";
 import { getPayment } from "./services/yookassa.js";
 import { getOrder, getOrderByPaymentId, updateOrder } from "./utils/orderStore.js";
 import { fulfillGreetingOrder } from "./services/greetingFulfillment.js";
-import { hasFreeRevisionsLeft, canOfferRefund, refundAmount } from "./utils/revisionRules.js";
+import { refundAmount } from "./utils/revisionRules.js";
 import { addPoints, getBalance } from "./utils/balanceStore.js";
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
@@ -31,8 +31,7 @@ bot.start(async (ctx) => {
       "1. Выбираешь формат и повод\n" +
       "2. Присылаешь фото и текст (или просишь помочь с текстом)\n" +
       "3. Оплачиваешь — получаешь результат\n" +
-      "4. Не понравилось — переделаем один раз бесплатно\n" +
-      "5. Если и это не подошло — вернём половину стоимости баллами на счёт\n\n" +
+      "4. Понравилось — забираешь. Не понравилось — вернём половину стоимости баллами на счёт\n\n" +
       "Готов начать?"
   );
   return ctx.reply("Выбери, с чего начнём:", serviceKeyboard);
@@ -48,36 +47,21 @@ bot.action("service:song", async (ctx) => {
   return ctx.scene.enter("song-wizard");
 });
 
-bot.action(/^greeting:like:(.+)$/, async (ctx) => {
-  await ctx.answerCbQuery("Рады, что понравилось! 🎉");
-  await ctx.reply("Спасибо! Если захочешь сделать ещё одно поздравление — жми /start.");
-});
-
-bot.action(/^greeting:redo:(.+)$/, async (ctx) => {
+// Без бесплатной переделки видео (решено 2026-09-23) — сразу развилка: забрал результат,
+// или отказ с возвратом половины баллами. Текст клиент уже согласовал до оплаты (в
+// greeting.js), поэтому предмет спора на этом шаге — только сама генерация видео.
+bot.action(/^greeting:accept:(.+)$/, async (ctx) => {
   const orderId = ctx.match[1];
   const order = getOrder(orderId);
-  if (!order) return ctx.answerCbQuery("Заказ не найден.");
-  if (!hasFreeRevisionsLeft(order.revisionCount)) {
-    return ctx.answerCbQuery("Бесплатная переделка уже использована.");
-  }
-  await ctx.answerCbQuery();
-  const updated = updateOrder(orderId, { revisionCount: order.revisionCount + 1 });
-  await ctx.reply("Переделываю, это снова займёт пару минут...");
-  try {
-    await fulfillGreetingOrder(bot, updated);
-  } catch (err) {
-    console.error("Redo generation failed:", err);
-    await ctx.reply(`Не получилось переделать: ${err.message}. Напиши нам, разберёмся.`);
-  }
+  if (order) updateOrder(orderId, { status: "delivered" });
+  await ctx.answerCbQuery("Готово! 🎉");
+  await ctx.reply("Спасибо! Если захочешь сделать ещё одно поздравление — жми /start.");
 });
 
 bot.action(/^greeting:refund:(.+)$/, async (ctx) => {
   const orderId = ctx.match[1];
   const order = getOrder(orderId);
   if (!order) return ctx.answerCbQuery("Заказ не найден.");
-  if (!canOfferRefund(order.revisionCount)) {
-    return ctx.answerCbQuery("Сначала нужно попробовать бесплатную переделку.");
-  }
   await ctx.answerCbQuery();
   const amount = refundAmount(order.priceRub);
   const balance = addPoints(order.userId, amount);

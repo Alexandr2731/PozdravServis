@@ -24,6 +24,11 @@ function greetingPriceRub() {
   return price;
 }
 
+const videoStyleKeyboard = Markup.inlineKeyboard([
+  Markup.button.callback("🎥 Обычный (реалистичный)", "style:realistic"),
+  Markup.button.callback("🎨 Мультяшный", "style:cartoon"),
+]);
+
 const textSourceKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("✍️ У меня свой текст", "textsrc:own"),
   Markup.button.callback("🤖 Помоги написать", "textsrc:help"),
@@ -34,16 +39,21 @@ const textStyleKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("📜 Стихи", "textstyle:poem"),
 ]);
 
-const styleKeyboard = Markup.inlineKeyboard([
-  Markup.button.callback("🎥 Обычный (реалистичный)", "style:realistic"),
-  Markup.button.callback("🎨 Мультяшный", "style:cartoon"),
+// 2 варианта сразу — генерация текста через GPT-4o-mini дешёвая (в отличие от видео,
+// где по той же причине сознательно оставлен только 1 вариант за попытку), два варианта
+// почти ничего не стоят дополнительно, а выбор для клиента ощутимо лучше.
+const textVariantKeyboard = Markup.inlineKeyboard([
+  Markup.button.callback("1️⃣ Вариант 1", "textvariant:0"),
+  Markup.button.callback("2️⃣ Вариант 2", "textvariant:1"),
+  Markup.button.callback("✏️ Переделать оба", "textvariant:edit"),
 ]);
 
 // Реалистичное "оживление" фото с посторонними людьми (не самим заказчиком) без их
 // согласия — этический/юридический риск (по сути deepfake человека, который ничего не
-// разрешал). Мультяшный стиль пока тоже фактически подменяется реалистичным (см. ниже),
-// поэтому пока безопасного варианта для таких фото просто нет — честно говорим об этом,
-// а не генерируем молча.
+// разрешал). Мультяшный стиль пока фактически тоже подменяется реалистичным (см. ниже),
+// поэтому блокируем в обоих случаях — не только когда явно выбран "реалистичный". Стиль
+// выбирается раньше фото в этом сценарии, но сама проверка возможна только когда фото уже
+// есть — честно объясняем и просим другое фото, а не генерируем молча.
 const othersOnPhotoKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("Нет, только тот, кого поздравляем", "others:no"),
   Markup.button.callback("Да, есть ещё кто-то", "others:yes"),
@@ -60,6 +70,18 @@ async function transcribeIfVoice(ctx, voice) {
   return transcribeVoice(mp3Buffer);
 }
 
+async function generateAndShowVariants(ctx) {
+  const variants = await generateGreetingText({
+    occasion: ctx.wizard.state.occasion,
+    personInfo: ctx.wizard.state.personInfo,
+    style: ctx.wizard.state.textStyle,
+    count: 2,
+  });
+  ctx.wizard.state.textVariants = variants;
+  const message = variants.map((t, i) => `Вариант ${i + 1}:\n${t}`).join("\n\n———\n\n");
+  await ctx.reply(`Вот что получилось:\n\n${message}`, textVariantKeyboard);
+}
+
 export const greetingWizard = new Scenes.WizardScene(
   "greeting-wizard",
   (ctx) => {
@@ -74,6 +96,25 @@ export const greetingWizard = new Scenes.WizardScene(
     }
     ctx.wizard.state.occasion = occasionLabel(code);
     await ctx.answerCbQuery();
+    await ctx.reply("В каком стиле сделать видео?", videoStyleKeyboard);
+    return ctx.wizard.next();
+  },
+  // Стиль видео — теперь первый предметный выбор после повода, раньше текста и фото.
+  // Сама проверка "реалистичный/мультяшный + посторонние на фото" случится позже, когда
+  // фото уже будет на руках — здесь просто запоминаем выбор.
+  async (ctx) => {
+    const style = ctx.callbackQuery?.data?.split(":")[1];
+    if (!style) {
+      ctx.reply("Выбери стиль кнопкой выше.");
+      return;
+    }
+    ctx.wizard.state.videoStyle = style;
+    await ctx.answerCbQuery();
+    if (style === "cartoon") {
+      await ctx.reply(
+        "Мультяшный стиль пока в разработке — сделаем в обычном (реалистичном), пока это единственный готовый вариант."
+      );
+    }
     await ctx.reply("У тебя уже есть текст или стих поздравления, или помочь его написать?", textSourceKeyboard);
     return ctx.wizard.next();
   },
@@ -89,11 +130,16 @@ export const greetingWizard = new Scenes.WizardScene(
       await ctx.reply("В каком стиле написать текст?", textStyleKeyboard);
       return ctx.wizard.next(); // -> шаг выбора прозы/стихов
     }
-    await ctx.reply("Пришли текст поздравления — текстом или голосовым сообщением.");
-    // "Свой текст" не нуждается в выборе прозы/стихов — пропускаем этот шаг сразу к сбору текста.
-    ctx.wizard.selectStep(ctx.wizard.cursor + 2);
+    await ctx.reply(
+      "Пришли текст поздравления — текстом, или голосовым сообщением (тогда этим же голосом " +
+        "прочитает поздравление в видео — отдельно голос для клонирования спрашивать не будем)."
+    );
+    // "Свой текст" — без прозы/стихов (это уже готовый текст клиента, мы его не переписываем)
+    // и без одобрения (одобрять нечего) — сразу к сбору текста, а оттуда сразу к фото.
+    // Пропускаем 3 шага: textstyle(4), generate+show(5), approval(6) -> 7.
+    ctx.wizard.selectStep(ctx.wizard.cursor + 4);
   },
-  // Только для textMode === "help" — выбор до генерации, влияет на промпт в openai.js.
+  // Только для textMode === "help".
   async (ctx) => {
     const style = ctx.callbackQuery?.data?.split(":")[1];
     if (!style) {
@@ -105,6 +151,7 @@ export const greetingWizard = new Scenes.WizardScene(
     await ctx.reply("Расскажи о человеке, кого поздравляем: имя, что любит, за что цените.");
     return ctx.wizard.next();
   },
+  // Только для textMode === "help" — собираем информацию и генерируем 2 варианта на выбор.
   async (ctx) => {
     const typed = ctx.message?.text;
     const voice = ctx.message?.voice;
@@ -113,18 +160,69 @@ export const greetingWizard = new Scenes.WizardScene(
       return;
     }
     try {
-      if (ctx.wizard.state.textMode === "help") {
-        const personInfo = typed || (await transcribeIfVoice(ctx, voice));
-        await ctx.reply("Пишу текст поздравления...");
-        const text = await generateGreetingText({
-          occasion: ctx.wizard.state.occasion,
-          personInfo,
-          style: ctx.wizard.state.textStyle,
-        });
-        ctx.wizard.state.text = text;
-        await ctx.reply(`Вот что получилось:\n\n${text}`);
+      ctx.wizard.state.personInfo = typed || (await transcribeIfVoice(ctx, voice));
+      await ctx.reply("Пишу текст поздравления, два варианта...");
+      await generateAndShowVariants(ctx);
+    } catch (err) {
+      await ctx.reply(`Не получилось обработать: ${err.message}`);
+      return;
+    }
+    return ctx.wizard.next();
+  },
+  // Выбор варианта (или переделка обоих) — обязательный шаг перед тем, как идти дальше.
+  // Переделка бесплатна и без ограничения по числу попыток (в отличие от самого видео).
+  async (ctx) => {
+    const action = ctx.callbackQuery?.data?.split(":")[1];
+
+    if (action === "0" || action === "1") {
+      await ctx.answerCbQuery();
+      ctx.wizard.state.text = ctx.wizard.state.textVariants[Number(action)];
+      await ctx.reply("Теперь пришли фото, которое станет основой поздравления.");
+      // next() увёл бы на шаг "свой текст" (следующий по счёту, но не по смыслу) — текст
+      // уже выбран, нужен сразу шаг приёма фото (тот же, куда попадает и ветка "свой текст").
+      ctx.wizard.selectStep(ctx.wizard.cursor + 2);
+      return;
+    }
+
+    if (action === "edit") {
+      await ctx.answerCbQuery();
+      await ctx.reply(
+        "Что поправить? Опиши свободно, или просто расскажи о человеке ещё раз, если хочешь другие варианты целиком."
+      );
+      ctx.wizard.state.awaitingTextFeedback = true;
+      return; // остаёмся на этом шаге
+    }
+
+    if (ctx.wizard.state.awaitingTextFeedback && ctx.message?.text) {
+      ctx.wizard.state.personInfo = `${ctx.wizard.state.personInfo}\n\nПравка от клиента: ${ctx.message.text}`;
+      ctx.wizard.state.awaitingTextFeedback = false;
+      await ctx.reply("Переписываю, снова два варианта...");
+      try {
+        await generateAndShowVariants(ctx);
+      } catch (err) {
+        await ctx.reply(`Не получилось переписать: ${err.message}`);
+      }
+      return; // остаёмся на этом же шаге, снова ждём выбор/переделку
+    }
+
+    ctx.reply("Выбери кнопкой выше: вариант 1, вариант 2, или переделать оба.");
+  },
+  // Только для textMode === "own" — принимаем текст как есть, без одобрения и стиля.
+  // Если прислали голосом — тот же файл станет источником голоса для клонирования позже
+  // (см. шаг после фото), отдельно голос уже не спрашиваем.
+  async (ctx) => {
+    const typed = ctx.message?.text;
+    const voice = ctx.message?.voice;
+    if (!typed && !voice) {
+      ctx.reply("Пришли текст или голосовое сообщение.");
+      return;
+    }
+    try {
+      if (voice) {
+        ctx.wizard.state.voiceFileId = voice.file_id;
+        ctx.wizard.state.text = await transcribeIfVoice(ctx, voice);
       } else {
-        ctx.wizard.state.text = typed || (await transcribeIfVoice(ctx, voice));
+        ctx.wizard.state.text = typed;
       }
     } catch (err) {
       await ctx.reply(`Не получилось обработать: ${err.message}`);
@@ -151,9 +249,9 @@ export const greetingWizard = new Scenes.WizardScene(
     }
     await ctx.answerCbQuery();
     if (answer === "yes") {
-      // Пока мультяшный стиль не готов (см. следующий шаг), безопасной генерации для
-      // фото с посторонними людьми просто нет — не делаем молча, объясняем и просим
-      // другое фото, вместо того чтобы сгенерировать реалистичное видео без их согласия.
+      // Стиль выбирался раньше (в самом начале) — независимо от того, что тогда выбрали
+      // (реалистичный или мультяшный, который пока тоже падает в реалистичный), для фото
+      // с посторонними людьми сейчас нет безопасного варианта. Не генерируем молча.
       await ctx.reply(
         "Пока мы не можем обработать фото, где кроме поздравляемого есть кто-то ещё — " +
           "«оживление» фото в реалистичном стиле без согласия всех, кто на нём есть, мы не делаем.\n\n" +
@@ -163,21 +261,16 @@ export const greetingWizard = new Scenes.WizardScene(
       return ctx.scene.leave();
     }
     ctx.wizard.state.includesOthers = false;
-    await ctx.reply("В каком стиле сделать видео?", styleKeyboard);
-    return ctx.wizard.next();
-  },
-  async (ctx) => {
-    const style = ctx.callbackQuery?.data?.split(":")[1];
-    if (!style) {
-      ctx.reply("Выбери стиль кнопкой выше.");
+
+    if (ctx.wizard.state.voiceFileId) {
+      // Уже есть голос из шага "свой текст" (клиент наговорил его) — второй раз не спрашиваем.
+      await ctx.reply("Последний шаг — на какой email прислать чек за оплату?");
+      ctx.wizard.selectStep(ctx.wizard.cursor + 2);
       return;
     }
-    await ctx.answerCbQuery();
-    const prefix =
-      style === "cartoon" ? "Мультяшный стиль пока в разработке — сделаем в обычном (реалистичном).\n\n" : "";
+
     await ctx.reply(
-      prefix +
-        "Хочешь, чтобы поздравление звучало голосом того, кто поздравляет?\n\n" +
+      "Хочешь, чтобы поздравление звучало голосом того, кто поздравляет?\n\n" +
         "Пришли голосовое сообщение (10-30 секунд, чётко и без шума) — или нажми кнопку, чтобы использовать стандартный голос.",
       voiceKeyboard
     );

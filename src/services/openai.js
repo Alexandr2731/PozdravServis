@@ -3,7 +3,10 @@ import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
 
 // style: "prose" (обычный текст) | "poem" (стихи) — выбор клиента на шаге до генерации.
-export async function generateGreetingText({ occasion, personInfo, style = "prose" }) {
+// count: сколько независимых вариантов вернуть за один запрос (n у OpenAI) — генерация
+// текста дешёвая, 2 варианта почти не увеличивают стоимость, но дают клиенту выбор.
+// Возвращает массив строк длиной count (даже при count=1 — единообразия ради).
+export async function generateGreetingText({ occasion, personInfo, style = "prose", count = 1 }) {
   if (!OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY не задан — добавь его через /settings");
   }
@@ -21,6 +24,7 @@ export async function generateGreetingText({ occasion, personInfo, style = "pros
     },
     body: JSON.stringify({
       model: "gpt-4o-mini",
+      n: count,
       messages: [
         {
           role: "system",
@@ -45,7 +49,7 @@ export async function generateGreetingText({ occasion, personInfo, style = "pros
   if (!res.ok) {
     throw new Error(`OpenAI error: ${JSON.stringify(json)}`);
   }
-  return json.choices[0].message.content.trim();
+  return json.choices.map((c) => c.message.content.trim());
 }
 
 export async function transcribeVoice(audioBuffer, filename = "voice.mp3") {
