@@ -30,7 +30,8 @@ function greetingPriceRub() {
 // нормально сходятся, см. knowledge/discovery-2026-09-23/01-cost-reconciliation.md).
 // ~2.5 слова/сек обычной русской речи -> 30с ≈ 75 слов. Для "своего текста" это жёсткое
 // ограничение (иначе реальная длительность/себестоимость видео уедет далеко за
-// заложенную в цену), для ИИ-генерации — целевой ориентир в самом промпте (openai.js).
+// заложенную в цену), для ИИ-генерации — ориентир в промпте + перегенерация слишком
+// длинных вариантов (openai.js, generateGreetingText).
 const MAX_GREETING_TEXT_WORDS = 75;
 
 function countWords(text) {
@@ -52,7 +53,7 @@ const textStyleKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("📜 Стихи", "textstyle:poem"),
 ]);
 
-// 2 варианта сразу — генерация текста через GPT-4o-mini дешёвая (в отличие от видео,
+// 2 варианта сразу — генерация текста (gpt-5.5, см. openai.js) дешёвая (в отличие от видео,
 // где по той же причине сознательно оставлен только 1 вариант за попытку), два варианта
 // почти ничего не стоят дополнительно, а выбор для клиента ощутимо лучше.
 const textVariantKeyboard = Markup.inlineKeyboard([
@@ -93,6 +94,7 @@ async function generateAndShowVariants(ctx) {
     personInfo: ctx.wizard.state.personInfo,
     style: ctx.wizard.state.textStyle,
     count: 2,
+    maxWords: MAX_GREETING_TEXT_WORDS,
   });
   ctx.wizard.state.textVariants = variants;
   const message = variants.map((t, i) => `Вариант ${i + 1}:\n${t}`).join("\n\n———\n\n");
