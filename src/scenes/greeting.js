@@ -175,7 +175,7 @@ export const greetingWizard = new Scenes.WizardScene(
     }
     try {
       ctx.wizard.state.personInfo = typed || (await transcribeIfVoice(ctx, voice));
-      await ctx.reply("Пишу текст поздравления, два варианта...");
+      await ctx.reply("✍️ Пишу текст поздравления, два варианта — это займёт около 10 секунд...");
       await generateAndShowVariants(ctx);
     } catch (err) {
       await ctx.reply(`Не получилось обработать: ${err.message}`);
@@ -212,7 +212,7 @@ export const greetingWizard = new Scenes.WizardScene(
         const feedback = ctx.message.text || (await transcribeIfVoice(ctx, ctx.message.voice));
         ctx.wizard.state.personInfo = `${ctx.wizard.state.personInfo}\n\nПравка от клиента: ${feedback}`;
         ctx.wizard.state.awaitingTextFeedback = false;
-        await ctx.reply("Переписываю, снова два варианта...");
+        await ctx.reply("✍️ Переписываю, снова два варианта — около 10 секунд...");
         await generateAndShowVariants(ctx);
       } catch (err) {
         await ctx.reply(`Не получилось переписать: ${err.message}`);

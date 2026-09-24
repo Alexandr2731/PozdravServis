@@ -147,6 +147,17 @@ async function handleYookassaWebhook(req, res) {
     updateOrder(order.orderId, { status: "paid" });
     res.writeHead(200).end("ok"); // отвечаем ЮKassa сразу, генерация может занять пару минут
 
+    // Без этого клиент после оплаты видел тишину до самого видео и не понимал, прошла ли
+    // оплата (как у BroHit — «генерация началась, обычно до N минут», просьба Александра
+    // 24.09.2026). "До 10 минут" — с запасом: таймауты клонирования голоса (3 мин) и
+    // видео HeyGen (5 мин) в heygen.js; реальное время уточнить по живым прогонам.
+    await bot.telegram
+      .sendMessage(
+        order.chatId,
+        "✅ Оплата получена!\n\n🎬 Генерация видео началась ⚡\nОбычно занимает не более 10 минут.\nЯ пришлю видео сюда, как только будет готово 🎧"
+      )
+      .catch((err) => console.error("payment confirmation message failed:", err));
+
     fulfillGreetingOrder(bot, getOrder(order.orderId)).catch(async (err) => {
       console.error("fulfillGreetingOrder failed after payment:", err);
       await bot.telegram
