@@ -2,90 +2,123 @@ import { createServer } from "node:http";
 import crypto from "node:crypto";
 import { Telegraf, Scenes, session, Markup } from "telegraf";
 import { greetingWizard } from "./scenes/greeting.js";
+import { greetingPurchaseWizard } from "./scenes/greetingPurchase.js";
 import { songWizard } from "./scenes/song.js";
 import { getPayment } from "./services/yookassa.js";
-import { getOrder, getOrderByPaymentId, updateOrder } from "./utils/orderStore.js";
-import { fulfillGreetingOrder } from "./services/greetingFulfillment.js";
-import { refundAmount } from "./utils/revisionRules.js";
-import { addPoints, getBalance } from "./utils/balanceStore.js";
+import { getOrder, getOrderByPaymentId, updateOrder, findUnfinishedPaidOrder } from "./utils/orderStore.js";
+import { refundGreetingOrder } from "./services/greetingRefund.js";
+import { getBalance } from "./utils/balanceStore.js";
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
-const stage = new Scenes.Stage([greetingWizard, songWizard]);
+const stage = new Scenes.Stage([greetingWizard, greetingPurchaseWizard, songWizard]);
 
 bot.use(session());
-bot.use(stage.middleware());
+// stage.middleware() подключается НИЖЕ, после всех stage.* обработчиков: Telegraf снимает
+// список обработчиков stage в момент вызова middleware(), добавленные позже не сработают.
 
+// Три услуги (решение 24.09.2026, knowledge/tasks.md ФЛОУ-1). Работаем строго поэтапно:
+// пока доводим только Услугу 1 — песня и клип в меню с пометкой «скоро». Сцена песни
+// (song.js) сейчас недоступна из меню: она генерирует бесплатно, без оплаты.
 const serviceKeyboard = Markup.inlineKeyboard([
-  Markup.button.callback("🎬 Анимированное видео-поздравление", "service:video"),
-  Markup.button.callback("🎵 Именная песня + клип", "service:song"),
+  [Markup.button.callback("🎬 Анимированное поздравление", "service:video")],
+  [Markup.button.callback("🎵 Поздравительная песня — скоро", "service:soon")],
+  [Markup.button.callback("🎞 Поздравительный клип — скоро", "service:soon")],
 ]);
 
-bot.start(async (ctx) => {
+// Глобальные команды и кнопки висят на stage, а не на bot: обработчики stage срабатывают
+// РАНЬШЕ активной сцены, а wizard иначе проглатывает всё сам — /start посреди сценария
+// отвечал «Выбери кнопкой выше» (найдено прогоном 24.09.2026). Оплаченный заказ при этом
+// не теряется — service:video продолжит его (findUnfinishedPaidOrder).
+stage.start(async (ctx) => {
+  await ctx.scene.leave();
   await ctx.reply(
     `Привет, ${ctx.from.first_name || "друг"}! 👋\n\n` +
       "Я — «PozdravServis», сервис креативных поздравлений с помощью ИИ.\n\n" +
       "Что я умею:\n" +
-      "🎬 Оживить фото — на нём Вы сами зачитаете поздравление (с Вашим текстом или мы поможем его написать за Вас), в обычном или стихотворном стиле текста, в обычном или мультяшном варианте видео, голосом того, кто поздравляет\n" +
-      "🎵 Собрать именную песню с клипом в честь того, кого поздравляете\n\n" +
+      "🎬 Анимированное поздравление — оживим фото: человек на нём сам прочитает поздравление " +
+      "(твоим текстом или мы поможем написать — обычным текстом или стихами), голосом того, кто поздравляет, " +
+      "в реалистичном или мультяшном стиле\n" +
+      "🎵 Поздравительная песня — скоро\n" +
+      "🎞 Поздравительный клип — скоро\n\n" +
       "Как это устроено:\n" +
-      "1. Выбираешь формат и повод\n" +
-      "2. Присылаешь фото и текст (или просишь помочь с текстом)\n" +
-      "3. Оплачиваешь — получаешь результат\n" +
-      "4. Понравилось — забираешь. Не понравилось — вернём половину стоимости баллами на счёт\n\n" +
-      "Готов начать?"
+      "1. Выбираешь услугу и оплачиваешь\n" +
+      "2. Выбираешь повод, присылаешь фото и текст (или просишь помочь с текстом)\n" +
+      "3. Получаешь готовое видео прямо сюда\n" +
+      "4. Понравилось — забираешь. Не понравилось — вернём половину стоимости баллами на счёт"
   );
-  return ctx.reply("Выбери, с чего начнём:", serviceKeyboard);
+  return ctx.reply("С чего начнём?", serviceKeyboard);
 });
 
-bot.action("service:video", async (ctx) => {
+stage.action("service:video", async (ctx) => {
   await ctx.answerCbQuery();
-  return ctx.scene.enter("greeting-wizard");
+  // Уже оплаченный, но не доделанный заказ (бросил сценарий, рестарт бота) — продолжаем
+  // его, а не просим платить второй раз.
+  const unfinished = findUnfinishedPaidOrder(String(ctx.from.id));
+  if (unfinished) {
+    await ctx.reply("У тебя уже есть оплаченное поздравление — продолжаем с него.");
+    return ctx.scene.enter("greeting-wizard", { orderId: unfinished.orderId });
+  }
+  return ctx.scene.enter("greeting-purchase");
 });
 
-bot.action("service:song", async (ctx) => {
+stage.action("service:soon", (ctx) =>
+  ctx.answerCbQuery("Скоро! Пока доступно анимированное поздравление 🎬", { show_alert: true })
+);
+
+// Кнопка из сообщения «Оплата получена» (вебхук ЮKassa ниже) — вход в сценарий по оплаченному заказу.
+stage.action(/^greeting:start:(.+)$/, async (ctx) => {
+  const order = getOrder(ctx.match[1]);
+  if (!order || order.userId !== String(ctx.from.id)) return ctx.answerCbQuery("Заказ не найден.");
+  if (order.status !== "paid" && order.status !== "in_progress") {
+    return ctx.answerCbQuery("Этот заказ уже в работе или выполнен. Новый — /start.", { show_alert: true });
+  }
   await ctx.answerCbQuery();
-  return ctx.scene.enter("song-wizard");
+  return ctx.scene.enter("greeting-wizard", { orderId: order.orderId });
 });
 
 // Без бесплатной переделки видео (решено 2026-09-23) — сразу развилка: забрал результат,
-// или отказ с возвратом половины баллами. Текст клиент уже согласовал до оплаты (в
-// greeting.js), поэтому предмет спора на этом шаге — только сама генерация видео.
-bot.action(/^greeting:accept:(.+)$/, async (ctx) => {
-  const orderId = ctx.match[1];
-  const order = getOrder(orderId);
-  if (order) updateOrder(orderId, { status: "delivered" });
+// или отказ с возвратом половины баллами. Текст клиент уже согласовал в сценарии
+// (greeting.js), поэтому предмет спора на этом шаге — только сама генерация видео.
+stage.action(/^greeting:accept:(.+)$/, async (ctx) => {
+  const order = getOrder(ctx.match[1]);
+  if (!order || order.userId !== String(ctx.from.id) || order.status !== "awaiting_review") {
+    return ctx.answerCbQuery("По этому заказу решение уже принято.");
+  }
+  updateOrder(order.orderId, { status: "delivered" });
   await ctx.answerCbQuery("Готово! 🎉");
   await ctx.reply("Спасибо! Если захочешь сделать ещё одно поздравление — жми /start.");
 });
 
-bot.action(/^greeting:refund:(.+)$/, async (ctx) => {
-  const orderId = ctx.match[1];
-  const order = getOrder(orderId);
-  if (!order) return ctx.answerCbQuery("Заказ не найден.");
+stage.action(/^greeting:refund:(.+)$/, async (ctx) => {
+  const result = refundGreetingOrder(ctx.match[1], String(ctx.from.id));
+  if (!result.ok) return ctx.answerCbQuery(result.reason, { show_alert: true });
   await ctx.answerCbQuery();
-  const amount = refundAmount(order.priceRub);
-  const balance = addPoints(order.userId, amount);
-  updateOrder(orderId, { status: "unsatisfied_refunded" });
   await ctx.reply(
-    `Жаль, что не подошло. Начислили ${amount.toFixed(0)} баллов на счёт — итого у тебя ${balance.toFixed(0)} ` +
+    `Жаль, что не подошло. Начислили ${result.amount.toFixed(0)} баллов на счёт — итого у тебя ${result.balance.toFixed(0)} ` +
       `баллов, их можно использовать на следующий заказ. Проверить баланс — /balance.`
   );
 });
 
-bot.command("balance", async (ctx) => {
+stage.command("balance", async (ctx) => {
   const balance = getBalance(String(ctx.from.id));
   await ctx.reply(`Твой баланс: ${balance.toFixed(0)} баллов.`);
 });
 
-bot.help((ctx) =>
+stage.help((ctx) =>
   ctx.reply(
     "Как это работает:\n\n" +
-      "1. Выбери тип поздравления командой /start\n" +
-      "2. Пришли фото и текст поздравления\n" +
-      "3. Дождись готового видео (пара минут)\n\n" +
-      "/start — начать новое поздравление"
+      "1. /start — выбери услугу и оплати\n" +
+      "2. Выбери повод, пришли фото и текст (или попроси помочь с текстом)\n" +
+      "3. Дождись готового видео (обычно до 10 минут)\n\n" +
+      "/balance — баланс баллов"
   )
 );
+
+bot.use(stage.middleware());
+
+// Старая кнопка из уже законченного сценария (например, повторный «Отказаться») —
+// без ответа у клиента бесконечно крутится индикатор на кнопке.
+bot.on("callback_query", (ctx) => ctx.answerCbQuery("Эта кнопка уже неактуальна. Начать заново — /start"));
 
 bot.telegram.setMyCommands([
   { command: "start", description: "Начать новое поздравление" },
@@ -145,25 +178,20 @@ async function handleYookassaWebhook(req, res) {
     }
 
     updateOrder(order.orderId, { status: "paid" });
-    res.writeHead(200).end("ok"); // отвечаем ЮKassa сразу, генерация может занять пару минут
+    res.writeHead(200).end("ok");
 
-    // Без этого клиент после оплаты видел тишину до самого видео и не понимал, прошла ли
-    // оплата (как у BroHit — «генерация началась, обычно до N минут», просьба Александра
-    // 24.09.2026). "До 10 минут" — с запасом: таймауты клонирования голоса (3 мин) и
-    // видео HeyGen (5 мин) в heygen.js; реальное время уточнить по живым прогонам.
+    // Оплата теперь в НАЧАЛЕ (ФЛОУ-1, 24.09.2026): после неё клиент проходит сценарий
+    // (повод, текст, фото, голос), генерация стартует в конце сценария (greeting.js).
+    // Сцену из вебхука открыть нельзя (нет update от клиента) — поэтому кнопка «Начать».
+    // Сообщение сразу — чтобы клиент видел, что оплата прошла (просьба Александра 24.09).
     await bot.telegram
       .sendMessage(
         order.chatId,
-        "✅ Оплата получена!\n\n🎬 Генерация видео началась ⚡\nОбычно занимает не более 10 минут.\nЯ пришлю видео сюда, как только будет готово 🎧"
+        "✅ Оплата получена! Спасибо.\n\nТеперь создадим поздравление — это займёт пару минут: " +
+          "повод, текст, фото и голос. Жми «Начать» 👇",
+        Markup.inlineKeyboard([Markup.button.callback("▶️ Начать", `greeting:start:${order.orderId}`)])
       )
       .catch((err) => console.error("payment confirmation message failed:", err));
-
-    fulfillGreetingOrder(bot, getOrder(order.orderId)).catch(async (err) => {
-      console.error("fulfillGreetingOrder failed after payment:", err);
-      await bot.telegram
-        .sendMessage(order.chatId, `Оплата прошла, но не получилось создать видео: ${err.message}. Напиши нам, разберёмся и вернём деньги.`)
-        .catch(() => {});
-    });
   } catch (err) {
     console.error("YooKassa webhook error:", err);
     res.writeHead(200).end("ok"); // 200 всё равно — иначе ЮKassa будет бесконечно ретраить кривой запрос

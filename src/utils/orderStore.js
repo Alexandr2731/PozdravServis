@@ -50,3 +50,13 @@ export function updateOrder(orderId, patch) {
   writeAll(orders);
   return orders[orderId];
 }
+
+// Оплаченный, но ещё не доведённый до генерации заказ клиента. Нужен, чтобы оплата не
+// терялась: сцена (session() Telegraf) не переживает рестарт процесса, а клиент может
+// бросить сценарий на середине — по /start он продолжит с тем же оплаченным заказом,
+// а не заплатит второй раз.
+export function findUnfinishedPaidOrder(userId) {
+  return Object.values(readAll())
+    .filter((o) => o.userId === userId && (o.status === "paid" || o.status === "in_progress"))
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))[0];
+}

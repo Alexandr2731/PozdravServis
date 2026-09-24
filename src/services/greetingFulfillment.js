@@ -5,13 +5,13 @@ import { convertOggToMp3 } from "../utils/audio.js";
 import { updateOrder } from "../utils/orderStore.js";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 
-// Отделено от greeting.js: вызывается из вебхука ЮKassa в bot.js после оплаты — там нет
-// доступа к Telegraf wizard.state, заказ уже вне сцены к этому моменту.
+// Отделено от greeting.js: вызывается в конце сценария (greeting.js, startGeneration) по уже
+// оплаченному заказу и работает после выхода из сцены — поэтому берёт всё из заказа, а не из wizard.state.
 //
 // РЕШЕНО 2026-09-23 (голосом, Александр): без бесплатной переделки видео — HeyGen стоит
-// реальных денег за каждый прогон, в отличие от текста (GPT-4o-mini), где переделка
-// бесплатна и без ограничений. Клиент уже согласовал текст на предыдущем шаге (в greeting.js,
-// до оплаты) — единственная случайная величина, которая остаётся, это как ИИ на самом деле
+// реальных денег за каждый прогон, в отличие от текста, где есть 1 переделка (2+2 варианта).
+// Клиент уже согласовал текст на предыдущем шаге (в greeting.js) —
+// единственная случайная величина, которая остаётся, это как ИИ на самом деле
 // анимировал фото. Поэтому сразу развилка: забрал результат, или отказ с возвратом половины
 // стоимости баллами — без промежуточного бесплатного передела.
 
@@ -23,11 +23,11 @@ function reviewKeyboard(orderId) {
 }
 
 /** Генерирует видео по уже оплаченному заказу и присылает клиенту с кнопками отзыва. */
-export async function fulfillGreetingOrder(bot, order) {
+export async function fulfillGreetingOrder(telegram, order) {
   // fetchWithTimeout, не голый fetch — скачивание с серверов Telegram иногда зависает
   // посреди запроса на этой инфраструктуре (см. тот же фикс в greeting.js, найдено живым
   // тестом 23.09.2026).
-  const photoFileLink = await bot.telegram.getFileLink(order.photoFileId);
+  const photoFileLink = await telegram.getFileLink(order.photoFileId);
   let photoBuffer = Buffer.from(await (await fetchWithTimeout(photoFileLink.href, {})).arrayBuffer());
 
   // Мультяшный стиль — подключено и тестируется 23.09.2026 (было заглушкой "в разработке").
@@ -39,7 +39,7 @@ export async function fulfillGreetingOrder(bot, order) {
 
   let voiceId;
   if (order.voiceFileId) {
-    const voiceFileLink = await bot.telegram.getFileLink(order.voiceFileId);
+    const voiceFileLink = await telegram.getFileLink(order.voiceFileId);
     const oggBuffer = Buffer.from(await (await fetchWithTimeout(voiceFileLink.href, {})).arrayBuffer());
     const mp3Buffer = await convertOggToMp3(oggBuffer);
     voiceId = await cloneVoiceFromAudio(mp3Buffer);
@@ -47,9 +47,9 @@ export async function fulfillGreetingOrder(bot, order) {
 
   const videoUrl = await generateGreetingVideo({ photoBuffer, text: order.text, voiceId });
 
-  updateOrder(order.orderId, { variants: [...order.variants, videoUrl] });
+  updateOrder(order.orderId, { variants: [...order.variants, videoUrl], status: "awaiting_review" });
 
-  await bot.telegram.sendVideo(order.chatId, videoUrl, {
+  await telegram.sendVideo(order.chatId, videoUrl, {
     caption: "Готово! Вот твоё поздравление 🎉",
     ...reviewKeyboard(order.orderId),
   });

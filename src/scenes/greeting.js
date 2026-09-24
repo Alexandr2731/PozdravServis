@@ -1,29 +1,17 @@
 import { Scenes, Markup } from "telegraf";
 import { generateGreetingText, transcribeVoice, stylizeCartoon } from "../services/openai.js";
-import { createPayment } from "../services/yookassa.js";
 import { convertOggToMp3 } from "../utils/audio.js";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import { occasionKeyboard, occasionLabel } from "../constants/occasions.js";
-import { createOrder, updateOrder } from "../utils/orderStore.js";
+import { getOrder, updateOrder } from "../utils/orderStore.js";
+import { hasFreeRevisionsLeft, accumulateVariants } from "../utils/revisionRules.js";
+import { fulfillGreetingOrder } from "../services/greetingFulfillment.js";
+import { refundGreetingOrder } from "../services/greetingRefund.js";
 
-// Цена НЕ зашита числом сознательно — себестоимость (реальный тариф HeyGen на минуту
-// видео) ещё не подтверждена (см. knowledge/discovery-2026-09-23/01-cost-reconciliation.md),
-// поэтому цену задаёт переменная окружения, а не код: без неё бот честно падает с
-// понятной ошибкой при попытке создать платёж, а не продаёт по случайному числу.
-function greetingPriceRub() {
-  const raw = process.env.GREETING_PRICE_RUB;
-  if (!raw) {
-    throw new Error(
-      "GREETING_PRICE_RUB не задан — цена ещё не определена (себестоимость не подтверждена), " +
-        "оплату включать нельзя без явного значения"
-    );
-  }
-  const price = Number(raw);
-  if (!Number.isFinite(price) || price <= 0) {
-    throw new Error(`GREETING_PRICE_RUB задан некорректно: "${raw}"`);
-  }
-  return price;
-}
+// Сцена запускается ТОЛЬКО по уже оплаченному заказу (решение 24.09.2026, knowledge/tasks.md
+// ФЛОУ-1): оплата — в greetingPurchase.js, вход сюда — ctx.scene.enter("greeting-wizard",
+// { orderId }) из bot.js. Всё, что клиент выбирает здесь, дописывается в этот заказ, а в
+// конце сразу запускается генерация видео.
 
 // Длительность ролика ограничена ориентиром 30 секунд (решено 23.09.2026, голосом,
 // Александр — на этой длительности и HeyGen-себестоимость, и сравнение цены с BroHit
@@ -53,14 +41,27 @@ const textStyleKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("📜 Стихи", "textstyle:poem"),
 ]);
 
-// 2 варианта сразу — генерация текста (gpt-5.5, см. openai.js) дешёвая (в отличие от видео,
-// где по той же причине сознательно оставлен только 1 вариант за попытку), два варианта
-// почти ничего не стоят дополнительно, а выбор для клиента ощутимо лучше.
-const textVariantKeyboard = Markup.inlineKeyboard([
-  Markup.button.callback("1️⃣ Вариант 1", "textvariant:0"),
-  Markup.button.callback("2️⃣ Вариант 2", "textvariant:1"),
-  Markup.button.callback("✏️ Переделать оба", "textvariant:edit"),
-]);
+// 2 варианта за раунд — генерация текста (gpt-5.5, см. openai.js) дешёвая (в отличие от
+// видео, где сознательно только 1 вариант за попытку), выбор для клиента ощутимо лучше.
+// Раундов — 1 + FREE_REVISIONS_LIMIT (revisionRules.js), т.е. 2 варианта + ещё 2. Варианты
+// копятся: после переделки можно выбрать любой из всех 4. Когда переделки кончились —
+// вместо "Переделать" свой текст или отказ с возвратом половины баллами (оплата уже прошла).
+const VARIANT_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"];
+
+function textVariantKeyboard(variantsCount, canRevise) {
+  const variantButtons = Array.from({ length: variantsCount }, (_, i) =>
+    Markup.button.callback(`${VARIANT_EMOJI[i] ?? i + 1} Вариант ${i + 1}`, `textvariant:${i}`)
+  );
+  const rows = [];
+  for (let i = 0; i < variantButtons.length; i += 2) rows.push(variantButtons.slice(i, i + 2));
+  if (canRevise) {
+    rows.push([Markup.button.callback("✏️ Переделать", "textvariant:edit")]);
+  } else {
+    rows.push([Markup.button.callback("✍️ Пришлю свой текст", "textvariant:own")]);
+    rows.push([Markup.button.callback("💰 Отказаться — вернуть половину баллами", "textvariant:refund")]);
+  }
+  return Markup.inlineKeyboard(rows);
+}
 
 // "Оживление" фото с посторонними людьми (не самим заказчиком) без их согласия — этический/
 // юридический риск (по сути deepfake человека, который ничего не разрешал). Блокируем для
@@ -96,15 +97,59 @@ async function generateAndShowVariants(ctx) {
     count: 2,
     maxWords: MAX_GREETING_TEXT_WORDS,
   });
-  ctx.wizard.state.textVariants = variants;
-  const message = variants.map((t, i) => `Вариант ${i + 1}:\n${t}`).join("\n\n———\n\n");
-  await ctx.reply(`Вот что получилось:\n\n${message}`, textVariantKeyboard);
+  const firstNumber = (ctx.wizard.state.textVariants?.length ?? 0) + 1;
+  ctx.wizard.state.textVariants = accumulateVariants(ctx.wizard.state.textVariants, variants);
+  // сколько переделок уже использовано: 0 после первого раунда, 1 после второго
+  ctx.wizard.state.textRevisions = ctx.wizard.state.textVariants.length / 2 - 1;
+  const canRevise = hasFreeRevisionsLeft(ctx.wizard.state.textRevisions);
+
+  const message = variants.map((t, i) => `Вариант ${firstNumber + i}:\n${t}`).join("\n\n———\n\n");
+  const footer = canRevise
+    ? ""
+    : "\n\nМожно выбрать любой из вариантов — и новых, и прошлых. Если ни один не подходит — " +
+      "пришли свой текст или откажись от заказа: вернём половину стоимости баллами.";
+  await ctx.reply(
+    `Вот что получилось:\n\n${message}${footer}`,
+    textVariantKeyboard(ctx.wizard.state.textVariants.length, canRevise)
+  );
+}
+
+// Финал сценария: всё собрано -> дописываем в оплаченный заказ и сразу запускаем генерацию.
+// Не ждём её здесь (до 10 минут) — видео придёт отдельным сообщением из fulfillGreetingOrder.
+async function startGeneration(ctx) {
+  const { orderId } = ctx.wizard.state;
+  const order = updateOrder(orderId, {
+    status: "generating",
+    occasion: ctx.wizard.state.occasion,
+    text: ctx.wizard.state.text,
+    videoStyle: ctx.wizard.state.videoStyle,
+    photoFileId: ctx.wizard.state.photoFileId,
+    voiceFileId: ctx.wizard.state.voiceFileId,
+  });
+  await ctx.reply(
+    "🎬 Генерация видео началась ⚡\nОбычно занимает не более 10 минут.\nЯ пришлю видео сюда, как только будет готово 🎧"
+  );
+  const telegram = ctx.telegram;
+  fulfillGreetingOrder(telegram, order).catch(async (err) => {
+    console.error("fulfillGreetingOrder failed:", err);
+    updateOrder(orderId, { status: "failed", error: err.message });
+    await telegram
+      .sendMessage(order.chatId, `Не получилось создать видео: ${err.message}. Напиши нам — разберёмся и вернём деньги.`)
+      .catch(() => {});
+  });
+  return ctx.scene.leave();
 }
 
 export const greetingWizard = new Scenes.WizardScene(
   "greeting-wizard",
-  (ctx) => {
-    ctx.reply("По какому поводу поздравление?", occasionKeyboard);
+  async (ctx) => {
+    const order = ctx.wizard.state.orderId && getOrder(ctx.wizard.state.orderId);
+    if (!order || (order.status !== "paid" && order.status !== "in_progress")) {
+      await ctx.reply("Сначала нужно оплатить поздравление — жми /start.");
+      return ctx.scene.leave();
+    }
+    updateOrder(order.orderId, { status: "in_progress" });
+    await ctx.reply("По какому поводу поздравление?", occasionKeyboard);
     return ctx.wizard.next();
   },
   async (ctx) => {
@@ -183,14 +228,15 @@ export const greetingWizard = new Scenes.WizardScene(
     }
     return ctx.wizard.next();
   },
-  // Выбор варианта (или переделка обоих) — обязательный шаг перед тем, как идти дальше.
-  // Переделка бесплатна и без ограничения по числу попыток (в отличие от самого видео).
+  // Выбор варианта (или переделка) — обязательный шаг перед тем, как идти дальше.
+  // Переделка одна (revisionRules.js) — каждый раунд стоит денег, а заказ уже оплачен.
   async (ctx) => {
     const action = ctx.callbackQuery?.data?.split(":")[1];
+    const variantIndex = Number(action);
 
-    if (action === "0" || action === "1") {
+    if (Number.isInteger(variantIndex) && ctx.wizard.state.textVariants?.[variantIndex]) {
       await ctx.answerCbQuery();
-      ctx.wizard.state.text = ctx.wizard.state.textVariants[Number(action)];
+      ctx.wizard.state.text = ctx.wizard.state.textVariants[variantIndex];
       await ctx.reply("Теперь пришли фото, которое станет основой поздравления.");
       // next() увёл бы на шаг "свой текст" (следующий по счёту, но не по смыслу) — текст
       // уже выбран, нужен сразу шаг приёма фото (тот же, куда попадает и ветка "свой текст").
@@ -198,7 +244,28 @@ export const greetingWizard = new Scenes.WizardScene(
       return;
     }
 
-    if (action === "edit") {
+    if (action === "own") {
+      await ctx.answerCbQuery();
+      await ctx.reply(
+        "Пришли свой текст поздравления — текстом, или голосовым сообщением (тогда этим же голосом " +
+          "прочитает поздравление в видео)."
+      );
+      return ctx.wizard.next(); // -> шаг "свой текст"
+    }
+
+    if (action === "refund") {
+      await ctx.answerCbQuery();
+      const result = refundGreetingOrder(ctx.wizard.state.orderId, String(ctx.from.id));
+      await ctx.reply(
+        result.ok
+          ? `Жаль, что не подошло. Начислили ${result.amount.toFixed(0)} баллов на счёт — итого у тебя ` +
+              `${result.balance.toFixed(0)} баллов, их можно использовать на следующий заказ. Баланс — /balance.`
+          : result.reason
+      );
+      return ctx.scene.leave();
+    }
+
+    if (action === "edit" && hasFreeRevisionsLeft(ctx.wizard.state.textRevisions ?? 0)) {
       await ctx.answerCbQuery();
       await ctx.reply(
         "Что поправить? Опиши свободно, или просто расскажи о человеке ещё раз, если хочешь другие варианты целиком."
@@ -220,7 +287,8 @@ export const greetingWizard = new Scenes.WizardScene(
       return; // остаёмся на этом же шаге, снова ждём выбор/переделку
     }
 
-    ctx.reply("Выбери кнопкой выше: вариант 1, вариант 2, или переделать оба.");
+    if (ctx.callbackQuery) await ctx.answerCbQuery();
+    await ctx.reply("Выбери кнопкой под вариантами выше.");
   },
   // Только для textMode === "own" — принимаем текст как есть, без одобрения и стиля.
   // Если прислали голосом — тот же файл станет источником голоса для клонирования позже
@@ -281,21 +349,19 @@ export const greetingWizard = new Scenes.WizardScene(
       // Стиль выбирался раньше (в самом начале) — независимо от того, что тогда выбрали
       // (реалистичный или мультяшный), для фото с посторонними людьми блокируем оба —
       // см. комментарий у othersOnPhotoKeyboard. Не генерируем молча.
+      // Заказ уже оплачен — не выкидываем из сценария, а просим другое фото.
       await ctx.reply(
         "Пока мы не можем обработать фото, где кроме поздравляемого есть кто-то ещё — " +
           "«оживление» чужого образа без согласия всех, кто на фото, мы не делаем, независимо от стиля.\n\n" +
-          "Пришли, пожалуйста, фото, где только тот, кого поздравляем — или начни заново командой /start, " +
-          "если хочешь выбрать другой формат поздравления."
+          "Пришли, пожалуйста, другое фото — где только тот, кого поздравляем."
       );
-      return ctx.scene.leave();
+      return ctx.wizard.back(); // -> снова шаг приёма фото
     }
     ctx.wizard.state.includesOthers = false;
 
     if (ctx.wizard.state.voiceFileId) {
       // Уже есть голос из шага "свой текст" (клиент наговорил его) — второй раз не спрашиваем.
-      await ctx.reply("Последний шаг — на какой email прислать чек за оплату?");
-      ctx.wizard.selectStep(ctx.wizard.cursor + 2);
-      return;
+      return startGeneration(ctx);
     }
 
     await ctx.reply(
@@ -314,55 +380,6 @@ export const greetingWizard = new Scenes.WizardScene(
     }
     if (isSkip) await ctx.answerCbQuery();
     if (voice) ctx.wizard.state.voiceFileId = voice.file_id;
-
-    await ctx.reply("Последний шаг — на какой email прислать чек за оплату?");
-    return ctx.wizard.next();
-  },
-  // Оплата — генерация начинается только после подтверждённого платежа (см. вебхук в
-  // bot.js), а не сразу здесь. До этого шага не тратим ни рубля на HeyGen — ни фото не
-  // грузим как asset, ни голос не клонируем — на случай, если клиент вообще не оплатит.
-  async (ctx) => {
-    const email = ctx.message?.text?.trim();
-    if (!email || !email.includes("@")) {
-      ctx.reply("Похоже, это не email. Пришли ещё раз.");
-      return;
-    }
-
-    let price;
-    try {
-      price = greetingPriceRub();
-    } catch (err) {
-      await ctx.reply(`Оплата пока недоступна: ${err.message}. Попробуй позже.`);
-      return ctx.scene.leave();
-    }
-
-    const orderId = createOrder({
-      chatId: ctx.chat.id,
-      userId: String(ctx.from.id),
-      occasion: ctx.wizard.state.occasion,
-      text: ctx.wizard.state.text,
-      videoStyle: ctx.wizard.state.videoStyle,
-      photoFileId: ctx.wizard.state.photoFileId,
-      voiceFileId: ctx.wizard.state.voiceFileId,
-      priceRub: price,
-      status: "awaiting_payment",
-    });
-
-    try {
-      const { paymentId, confirmationUrl } = await createPayment({
-        amountRub: price,
-        description: `PozdravServis — анимированное поздравление (заказ ${orderId})`,
-        returnUrl: `https://t.me/${(await ctx.telegram.getMe()).username}`,
-        customer: { email },
-      });
-      updateOrder(orderId, { paymentId });
-
-      await ctx.reply(
-        `Стоимость: ${price} ₽.\n\nОплати по ссылке — после оплаты пришлю готовое видео сюда же, обычно в течение пары минут:\n${confirmationUrl}`
-      );
-    } catch (err) {
-      await ctx.reply(`Не получилось создать платёж: ${err.message}. Попробуй ещё раз позже.`);
-    }
-    return ctx.scene.leave();
+    return startGeneration(ctx);
   }
 );
