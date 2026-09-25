@@ -203,8 +203,8 @@ export const greetingWizard = new Scenes.WizardScene(
       return ctx.wizard.next(); // -> шаг выбора прозы/стихов
     }
     await ctx.reply(
-      "Пришлите текст поздравления — текстом или голосовым сообщением (тогда этим же голосом " +
-        "прочитает поздравление в видео — отдельно голос для клонирования спрашивать не будем)."
+      "Пришлите текст поздравления — текстом или голосовым сообщением.\n\n" +
+        "🎙 Если пришлёте голосом (не короче 10 секунд) — этим же голосом поздравление и прозвучит в видео."
     );
     // "Свой текст" — без прозы/стихов (это уже готовый текст клиента, мы его не переписываем)
     // и без одобрения (одобрять нечего) — сразу к сбору текста, а оттуда сразу к фото.
@@ -220,7 +220,10 @@ export const greetingWizard = new Scenes.WizardScene(
     }
     ctx.wizard.state.textStyle = style;
     await ctx.answerCbQuery();
-    await ctx.reply("Расскажите о человеке, которого поздравляем: имя, что любит, за что Вы его цените.");
+    await ctx.reply(
+      "Расскажите о человеке, которого поздравляем: имя, что любит, за что Вы его цените.\n\n" +
+        "🎙 Можно голосом: если сообщение будет не короче 10 секунд, сможем озвучить поздравление Вашим голосом."
+    );
     return ctx.wizard.next();
   },
   // Только для textMode === "help" — собираем информацию и генерируем 2 варианта на выбор.
@@ -261,8 +264,8 @@ export const greetingWizard = new Scenes.WizardScene(
     if (action === "own") {
       await ctx.answerCbQuery();
       await ctx.reply(
-        "Пришлите свой текст поздравления — текстом или голосовым сообщением (тогда этим же голосом " +
-          "прочитает поздравление в видео)."
+        "Пришлите свой текст поздравления — текстом или голосовым сообщением.\n\n" +
+          "🎙 Если пришлёте голосом (не короче 10 секунд) — этим же голосом поздравление и прозвучит в видео."
       );
       return ctx.wizard.next(); // -> шаг "свой текст"
     }
@@ -315,7 +318,8 @@ export const greetingWizard = new Scenes.WizardScene(
     let voiceFileId;
     try {
       if (voice) {
-        voiceFileId = voice.file_id;
+        // Короткое голосовое не годится для клонирования — текст берём, а голос спросим отдельно.
+        if (voice.duration >= MIN_VOICE_SAMPLE_SEC) voiceFileId = voice.file_id;
         text = await transcribeIfVoice(ctx, voice);
       } else {
         text = typed;
@@ -336,6 +340,12 @@ export const greetingWizard = new Scenes.WizardScene(
 
     ctx.wizard.state.text = text;
     if (voiceFileId) ctx.wizard.state.voiceFileId = voiceFileId;
+    if (voice && !voiceFileId) {
+      await ctx.reply(
+        `Текст приняли 👍 Голосовое получилось ${voice.duration} сек — для озвучки Вашим голосом нужно не меньше ` +
+          `${MIN_VOICE_SAMPLE_SEC}, поэтому голос спросим чуть позже отдельно.`
+      );
+    }
     await ctx.reply("Теперь пришлите фото, которое станет основой поздравления.");
     return ctx.wizard.next();
   },
@@ -403,6 +413,13 @@ export const greetingWizard = new Scenes.WizardScene(
     if (!isSkip && !voice) {
       ctx.reply("Пришлите голосовое сообщение или нажмите кнопку «Стандартный голос».");
       return;
+    }
+    if (voice && voice.duration < MIN_VOICE_SAMPLE_SEC) {
+      await ctx.reply(
+        `Голосовое получилось ${voice.duration} сек — для озвучки нужно не меньше ${MIN_VOICE_SAMPLE_SEC}. ` +
+          "Запишите, пожалуйста, чуть подлиннее — или нажмите «Стандартный голос»."
+      );
+      return; // остаёмся на этом шаге
     }
     if (isSkip) await ctx.answerCbQuery();
     if (voice) ctx.wizard.state.voiceFileId = voice.file_id;
