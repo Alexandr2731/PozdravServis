@@ -2,13 +2,14 @@ import { createServer } from "node:http";
 import crypto from "node:crypto";
 import { Telegraf, Scenes, session, Markup } from "telegraf";
 import { greetingWizard } from "./scenes/greeting.js";
-import { greetingPurchaseWizard } from "./scenes/greetingPurchase.js";
+import { greetingPurchaseWizard, sendPaymentLink } from "./scenes/greetingPurchase.js";
 import { songWizard } from "./scenes/song.js";
 import { getPayment } from "./services/yookassa.js";
 import { getOrder, getOrderByPaymentId, updateOrder, findUnfinishedPaidOrder } from "./utils/orderStore.js";
 import { declineGreetingOrder, sendDeclineMessage } from "./services/greetingDecline.js";
 import { markPromoUsed } from "./utils/promoStore.js";
-import { runGreetingFulfillment } from "./services/greetingFulfillment.js";
+import { runGreetingFulfillment, sendReadyVideo } from "./services/greetingFulfillment.js";
+import { mainMenuKeyboard, draftsMessage, readyMessage } from "./services/orderFolders.js";
 import { registerVisit } from "./utils/userStore.js";
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
@@ -21,11 +22,7 @@ bot.use(session());
 // Три услуги (решение 24.09.2026, knowledge/tasks.md ФЛОУ-1). Работаем строго поэтапно:
 // пока доводим только Услугу 1 — песня и клип в меню с пометкой «скоро». Сцена песни
 // (song.js) сейчас недоступна из меню: она генерирует бесплатно, без оплаты.
-const serviceKeyboard = Markup.inlineKeyboard([
-  [Markup.button.callback("🎬 Анимированное поздравление", "service:video")],
-  [Markup.button.callback("🎵 Поздравительная песня — скоро", "service:soon")],
-  [Markup.button.callback("🎞 Поздравительный клип — скоро", "service:soon")],
-]);
+// Меню — mainMenuKeyboard (orderFolders.js): услуги + папки «Черновики» и «Мои поздравления».
 
 // Глобальные команды и кнопки висят на stage, а не на bot: обработчики stage срабатывают
 // РАНЬШЕ активной сцены, а wizard иначе проглатывает всё сам — /start посреди сценария
@@ -55,7 +52,66 @@ stage.start(async (ctx) => {
       "4. Понравилось — забираете. Не понравилось — дарим скидку 50% на следующее поздравление\n\n" +
       "🎁 Первое анимированное поздравление — бесплатно!"
   );
-  return ctx.reply("С чего начнём?", serviceKeyboard);
+  return ctx.reply("С чего начнём?", mainMenuKeyboard(String(ctx.from.id)));
+});
+
+// Папки клиента (orderFolders.js): кнопки из главного меню и команды /drafts, /my.
+async function showDrafts(ctx) {
+  const { text, extra } = draftsMessage(String(ctx.from.id));
+  return ctx.reply(text, extra);
+}
+async function showReady(ctx) {
+  const { text, extra } = readyMessage(String(ctx.from.id));
+  return ctx.reply(text, extra);
+}
+stage.command("drafts", async (ctx) => {
+  await ctx.scene.leave();
+  return showDrafts(ctx);
+});
+stage.command("my", async (ctx) => {
+  await ctx.scene.leave();
+  return showReady(ctx);
+});
+stage.action("folders:drafts", async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.scene.leave();
+  return showDrafts(ctx);
+});
+stage.action("folders:ready", async (ctx) => {
+  await ctx.answerCbQuery();
+  await ctx.scene.leave();
+  return showReady(ctx);
+});
+stage.action("folders:generating", (ctx) =>
+  ctx.answerCbQuery("Видео создаётся — пришлём его сюда, как только будет готово (обычно до 10 минут).", {
+    show_alert: true,
+  })
+);
+
+// Неоплаченный заказ из черновиков — новая ссылка (старая живёт ~час).
+stage.action(/^greeting:pay:(.+)$/, async (ctx) => {
+  const order = getOrder(ctx.match[1]);
+  if (!order || order.userId !== String(ctx.from.id) || order.status !== "awaiting_payment") {
+    return ctx.answerCbQuery("Этот заказ уже оплачен.", { show_alert: true });
+  }
+  await ctx.answerCbQuery();
+  return sendPaymentLink(ctx, order);
+});
+
+// Готовое видео ещё раз: из черновиков (ждёт решения — с кнопками) и из «Мои поздравления».
+stage.action(/^greeting:(show|video):(.+)$/, async (ctx) => {
+  const order = getOrder(ctx.match[2]);
+  const allowed = ctx.match[1] === "show" ? ["awaiting_review"] : ["delivered"];
+  if (!order || order.userId !== String(ctx.from.id) || !allowed.includes(order.status)) {
+    return ctx.answerCbQuery("Видео не найдено — откройте папку заново.", { show_alert: true });
+  }
+  await ctx.answerCbQuery();
+  try {
+    await sendReadyVideo(ctx.telegram, order, { caption: `🎬 ${order.occasion ?? "Ваше поздравление"}` });
+  } catch (err) {
+    console.error("sendReadyVideo failed:", order.orderId, err);
+    await ctx.reply("Не получилось отправить видео. Попробуйте, пожалуйста, чуть позже.");
+  }
 });
 
 stage.action("service:video", async (ctx) => {
@@ -99,7 +155,8 @@ stage.action(/^greeting:accept:(.+)$/, async (ctx) => {
     order.isFreeTrial
       ? "Спасибо, что попробовали наш сервис! 🎁\n\nВ полной версии — ещё 2 варианта текста, если первые не подойдут. " +
           "Сделать следующее поздравление — /start."
-      : "Спасибо, что выбрали нас! Если захотите сделать ещё одно поздравление — нажмите /start."
+      : "Спасибо, что выбрали нас! Если захотите сделать ещё одно поздравление — нажмите /start.\n\n" +
+          "Это видео всегда можно получить снова в «🎬 Мои поздравления» — /my."
   );
 });
 
@@ -127,7 +184,9 @@ stage.help((ctx) =>
     "Как это работает:\n\n" +
       "1. /start — выберите услугу и оплатите её\n" +
       "2. Выберите повод, пришлите фото и текст (или попросите помочь с текстом)\n" +
-      "3. Дождитесь готового видео (обычно до 10 минут)"
+      "3. Дождитесь готового видео (обычно до 10 минут)\n\n" +
+      "📝 /drafts — черновики: всё начатое и незавершённое, можно продолжить с того же места\n" +
+      "🎬 /my — Ваши готовые поздравления, можно получить видео ещё раз"
   )
 );
 
@@ -139,6 +198,8 @@ bot.on("callback_query", (ctx) => ctx.answerCbQuery("Эта кнопка уже 
 
 bot.telegram.setMyCommands([
   { command: "start", description: "Начать новое поздравление" },
+  { command: "drafts", description: "📝 Черновики — начатое и незавершённое" },
+  { command: "my", description: "🎬 Мои поздравления" },
   { command: "help", description: "Как это работает" },
 ]);
 

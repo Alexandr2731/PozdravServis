@@ -133,6 +133,85 @@ async function generateAndShowVariants(ctx) {
   );
 }
 
+// Вопросы сценария — отдельными функциями: их задают и сами шаги, и продолжение черновика
+// (resumeDraft ниже — клиент вернулся к недоделанному заказу, повторяем вопрос его шага).
+const askOccasion = (ctx) => ctx.reply("По какому поводу поздравление?", occasionKeyboard);
+const askVideoStyle = (ctx) => ctx.reply("В каком стиле сделать видео?", videoStyleKeyboard);
+const askTextSource = (ctx) =>
+  ctx.reply("У Вас уже есть текст или стихи для поздравления, или помочь их написать?", textSourceKeyboard);
+const askTextStyle = (ctx) => ctx.reply("В каком стиле написать текст?", textStyleKeyboard);
+const askPersonInfo = (ctx) =>
+  ctx.reply(
+    "Расскажите о человеке, которого поздравляем: имя, что любит, за что Вы его цените.\n\n" +
+      "🎙 Можно голосом: если сообщение будет не короче 10 секунд, сможем озвучить поздравление Вашим голосом."
+  );
+const askOwnText = (ctx) =>
+  ctx.reply(
+    "Пришлите текст поздравления — текстом или голосовым сообщением.\n\n" +
+      "🎙 Если пришлёте голосом (не короче 10 секунд) — этим же голосом поздравление и прозвучит в видео."
+  );
+const askPhoto = (ctx) => ctx.reply("Теперь пришлите фото, которое станет основой поздравления.");
+const askOthersOnPhoto = (ctx) => ctx.reply("Кроме того, кого поздравляем, на фото есть ещё кто-то?", othersOnPhotoKeyboard);
+const askTextFeedback = (ctx) =>
+  ctx.reply("Что поправить? Опишите своими словами — или расскажите о человеке ещё раз, если хотите совсем другие варианты.");
+
+function askVoice(ctx) {
+  if (ctx.wizard.state.voiceSampleFileId) {
+    return ctx.reply(
+      "Озвучить поздравление Вашим голосом — тем, которым Вы рассказывали нам о человеке?\n\n" +
+        "Можно и записать новое голосовое сообщение (10–30 секунд, чётко и без шума) — просто пришлите его.",
+      voiceSampleKeyboard
+    );
+  }
+  return ctx.reply(
+    "Хотите, чтобы поздравление звучало голосом того, кто поздравляет?\n\n" +
+      "Пришлите голосовое сообщение (10–30 секунд, чётко и без шума) — или нажмите кнопку, чтобы использовать стандартный голос.",
+    voiceKeyboard
+  );
+}
+
+// Повтор уже написанных вариантов текста при продолжении черновика (без новой генерации).
+function reshowVariants(ctx) {
+  if (ctx.wizard.state.awaitingTextFeedback) return askTextFeedback(ctx);
+  const { textVariants = [], textRevisions = 0, isFreeTrial } = ctx.wizard.state;
+  const canRevise = !isFreeTrial && hasFreeRevisionsLeft(textRevisions);
+  const message = textVariants.map((t, i) => `Вариант ${i + 1}:\n${t}`).join("\n\n———\n\n");
+  return ctx.reply(`Ваши варианты текста:\n\n${message}`, textVariantKeyboard(textVariants.length, canRevise, !isFreeTrial));
+}
+
+// Номер шага сценария -> его вопрос. Номера — позиции в массиве steps ниже.
+const STEP_PROMPTS = {
+  1: askOccasion,
+  2: askVideoStyle,
+  3: askTextSource,
+  4: askTextStyle,
+  5: askPersonInfo,
+  6: reshowVariants,
+  7: askOwnText,
+  8: askPhoto,
+  9: askOthersOnPhoto,
+  10: askVoice,
+};
+
+// Черновик: после каждого шага ответы клиента сохраняются в заказ (order.draft), чтобы
+// продолжить с того же места после /start, рестарта бота или из «📝 Черновиков».
+const DRAFT_KEYS = [
+  "occasion", "videoStyle", "textMode", "textStyle", "personInfo", "textVariants", "textRevisions",
+  "awaitingTextFeedback", "text", "voiceFileId", "voiceSampleFileId", "photoFileId",
+];
+
+function withDraftSave(step) {
+  return async (ctx) => {
+    await step(ctx);
+    const { orderId } = ctx.wizard.state;
+    // Сохраняем, только пока клиент внутри сценария: после запуска генерации или отказа
+    // статус уже другой — черновик больше не нужен.
+    if (!orderId || getOrder(orderId)?.status !== "in_progress") return;
+    const state = Object.fromEntries(DRAFT_KEYS.map((k) => [k, ctx.wizard.state[k]]));
+    updateOrder(orderId, { draft: { cursor: ctx.wizard.cursor, state, savedAt: new Date().toISOString() } });
+  };
+}
+
 // Финал сценария: всё собрано -> дописываем в оплаченный заказ и сразу запускаем генерацию.
 // Не ждём её здесь (до 10 минут) — видео придёт отдельным сообщением из fulfillGreetingOrder.
 async function startGeneration(ctx) {
@@ -144,6 +223,7 @@ async function startGeneration(ctx) {
     videoStyle: ctx.wizard.state.videoStyle,
     photoFileId: ctx.wizard.state.photoFileId,
     voiceFileId: ctx.wizard.state.voiceFileId,
+    draft: null,
   });
   await ctx.reply(
     "🎬 Генерация видео началась ⚡\nОбычно это занимает не более 10 минут.\nПришлём видео сюда, как только оно будет готово 🎧"
@@ -152,8 +232,7 @@ async function startGeneration(ctx) {
   return ctx.scene.leave();
 }
 
-export const greetingWizard = new Scenes.WizardScene(
-  "greeting-wizard",
+const steps = [
   async (ctx) => {
     const order = ctx.wizard.state.orderId && getOrder(ctx.wizard.state.orderId);
     if (!order || (order.status !== "paid" && order.status !== "in_progress")) {
@@ -162,7 +241,15 @@ export const greetingWizard = new Scenes.WizardScene(
     }
     updateOrder(order.orderId, { status: "in_progress" });
     ctx.wizard.state.isFreeTrial = Boolean(order.isFreeTrial);
-    await ctx.reply("По какому поводу поздравление?", occasionKeyboard);
+    const draft = order.draft;
+    if (draft?.cursor > 1 && STEP_PROMPTS[draft.cursor]) {
+      Object.assign(ctx.wizard.state, draft.state);
+      ctx.wizard.selectStep(draft.cursor);
+      await ctx.reply("Продолжаем с того места, где Вы остановились 👇");
+      await STEP_PROMPTS[draft.cursor](ctx);
+      return;
+    }
+    await askOccasion(ctx);
     return ctx.wizard.next();
   },
   async (ctx) => {
@@ -173,7 +260,7 @@ export const greetingWizard = new Scenes.WizardScene(
     }
     ctx.wizard.state.occasion = occasionLabel(code);
     await ctx.answerCbQuery();
-    await ctx.reply("В каком стиле сделать видео?", videoStyleKeyboard);
+    await askVideoStyle(ctx);
     return ctx.wizard.next();
   },
   // Стиль видео — теперь первый предметный выбор после повода, раньше текста и фото.
@@ -187,7 +274,7 @@ export const greetingWizard = new Scenes.WizardScene(
     }
     ctx.wizard.state.videoStyle = style;
     await ctx.answerCbQuery();
-    await ctx.reply("У Вас уже есть текст или стихи для поздравления, или помочь их написать?", textSourceKeyboard);
+    await askTextSource(ctx);
     return ctx.wizard.next();
   },
   async (ctx) => {
@@ -199,13 +286,10 @@ export const greetingWizard = new Scenes.WizardScene(
     ctx.wizard.state.textMode = choice;
     await ctx.answerCbQuery();
     if (choice === "help") {
-      await ctx.reply("В каком стиле написать текст?", textStyleKeyboard);
+      await askTextStyle(ctx);
       return ctx.wizard.next(); // -> шаг выбора прозы/стихов
     }
-    await ctx.reply(
-      "Пришлите текст поздравления — текстом или голосовым сообщением.\n\n" +
-        "🎙 Если пришлёте голосом (не короче 10 секунд) — этим же голосом поздравление и прозвучит в видео."
-    );
+    await askOwnText(ctx);
     // "Свой текст" — без прозы/стихов (это уже готовый текст клиента, мы его не переписываем)
     // и без одобрения (одобрять нечего) — сразу к сбору текста, а оттуда сразу к фото.
     // Пропускаем 3 шага: textstyle(4), generate+show(5), approval(6) -> 7.
@@ -220,10 +304,7 @@ export const greetingWizard = new Scenes.WizardScene(
     }
     ctx.wizard.state.textStyle = style;
     await ctx.answerCbQuery();
-    await ctx.reply(
-      "Расскажите о человеке, которого поздравляем: имя, что любит, за что Вы его цените.\n\n" +
-        "🎙 Можно голосом: если сообщение будет не короче 10 секунд, сможем озвучить поздравление Вашим голосом."
-    );
+    await askPersonInfo(ctx);
     return ctx.wizard.next();
   },
   // Только для textMode === "help" — собираем информацию и генерируем 2 варианта на выбор.
@@ -254,7 +335,7 @@ export const greetingWizard = new Scenes.WizardScene(
     if (Number.isInteger(variantIndex) && ctx.wizard.state.textVariants?.[variantIndex]) {
       await ctx.answerCbQuery();
       ctx.wizard.state.text = ctx.wizard.state.textVariants[variantIndex];
-      await ctx.reply("Теперь пришлите фото, которое станет основой поздравления.");
+      await askPhoto(ctx);
       // next() увёл бы на шаг "свой текст" (следующий по счёту, но не по смыслу) — текст
       // уже выбран, нужен сразу шаг приёма фото (тот же, куда попадает и ветка "свой текст").
       ctx.wizard.selectStep(ctx.wizard.cursor + 2);
@@ -263,10 +344,7 @@ export const greetingWizard = new Scenes.WizardScene(
 
     if (action === "own") {
       await ctx.answerCbQuery();
-      await ctx.reply(
-        "Пришлите свой текст поздравления — текстом или голосовым сообщением.\n\n" +
-          "🎙 Если пришлёте голосом (не короче 10 секунд) — этим же голосом поздравление и прозвучит в видео."
-      );
+      await askOwnText(ctx);
       return ctx.wizard.next(); // -> шаг "свой текст"
     }
 
@@ -280,9 +358,7 @@ export const greetingWizard = new Scenes.WizardScene(
 
     if (action === "edit" && hasFreeRevisionsLeft(ctx.wizard.state.textRevisions ?? 0)) {
       await ctx.answerCbQuery();
-      await ctx.reply(
-        "Что поправить? Опишите своими словами — или расскажите о человеке ещё раз, если хотите совсем другие варианты."
-      );
+      await askTextFeedback(ctx);
       ctx.wizard.state.awaitingTextFeedback = true;
       return; // остаёмся на этом шаге
     }
@@ -346,17 +422,17 @@ export const greetingWizard = new Scenes.WizardScene(
           `${MIN_VOICE_SAMPLE_SEC}, поэтому голос спросим чуть позже отдельно.`
       );
     }
-    await ctx.reply("Теперь пришлите фото, которое станет основой поздравления.");
+    await askPhoto(ctx);
     return ctx.wizard.next();
   },
-  (ctx) => {
+  async (ctx) => {
     const photo = ctx.message?.photo?.at(-1);
     if (!photo) {
-      ctx.reply("Нужно именно фото. Попробуйте, пожалуйста, ещё раз.");
+      await ctx.reply("Нужно именно фото. Попробуйте, пожалуйста, ещё раз.");
       return;
     }
     ctx.wizard.state.photoFileId = photo.file_id;
-    ctx.reply("Кроме того, кого поздравляем, на фото есть ещё кто-то?", othersOnPhotoKeyboard);
+    await askOthersOnPhoto(ctx);
     return ctx.wizard.next();
   },
   async (ctx) => {
@@ -385,20 +461,7 @@ export const greetingWizard = new Scenes.WizardScene(
       return startGeneration(ctx);
     }
 
-    if (ctx.wizard.state.voiceSampleFileId) {
-      await ctx.reply(
-        "Озвучить поздравление Вашим голосом — тем, которым Вы рассказывали нам о человеке?\n\n" +
-          "Можно и записать новое голосовое сообщение (10–30 секунд, чётко и без шума) — просто пришлите его.",
-        voiceSampleKeyboard
-      );
-      return ctx.wizard.next();
-    }
-
-    await ctx.reply(
-      "Хотите, чтобы поздравление звучало голосом того, кто поздравляет?\n\n" +
-        "Пришлите голосовое сообщение (10–30 секунд, чётко и без шума) — или нажмите кнопку, чтобы использовать стандартный голос.",
-      voiceKeyboard
-    );
+    await askVoice(ctx);
     return ctx.wizard.next();
   },
   async (ctx) => {
@@ -424,5 +487,7 @@ export const greetingWizard = new Scenes.WizardScene(
     if (isSkip) await ctx.answerCbQuery();
     if (voice) ctx.wizard.state.voiceFileId = voice.file_id;
     return startGeneration(ctx);
-  }
-);
+  },
+];
+
+export const greetingWizard = new Scenes.WizardScene("greeting-wizard", ...steps.map(withDraftSave));

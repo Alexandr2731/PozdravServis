@@ -55,12 +55,23 @@ export async function fulfillGreetingOrder(telegram, order) {
     if (voiceId) await deleteVoice(voiceId).catch((err) => console.error("deleteVoice failed:", err));
   }
 
-  updateOrder(order.orderId, { variants: [...order.variants, videoUrl], status: "awaiting_review" });
+  const updated = updateOrder(order.orderId, { variants: [...order.variants, videoUrl], status: "awaiting_review" });
+  await sendReadyVideo(telegram, updated);
+}
 
-  await telegram.sendVideo(order.chatId, videoUrl, {
-    caption: "Готово! Вот Ваше поздравление 🎉",
-    ...reviewKeyboard(order.orderId, order.isFreeTrial),
-  });
+/**
+ * Присылает готовое видео. Первый раз — по ссылке HeyGen; Telegram хранит файл у себя и
+ * возвращает file_id — запоминаем его: ссылка HeyGen со временем истекает, а по file_id видео
+ * можно прислать снова когда угодно («🎬 Мои поздравления», «📝 Черновики»).
+ * Кнопки «Забрать / Не подошло» — только пока клиент не решил (awaiting_review).
+ */
+export async function sendReadyVideo(telegram, order, { caption = "Готово! Вот Ваше поздравление 🎉" } = {}) {
+  const source = order.videoFileId || order.variants.at(-1);
+  const extra = order.status === "awaiting_review" ? reviewKeyboard(order.orderId, order.isFreeTrial) : {};
+  const message = await telegram.sendVideo(order.chatId, source, { caption, ...extra });
+  if (!order.videoFileId && message?.video?.file_id) {
+    updateOrder(order.orderId, { videoFileId: message.video.file_id });
+  }
 }
 
 /**
