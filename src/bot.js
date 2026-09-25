@@ -241,57 +241,75 @@ function readBody(req) {
   });
 }
 
+// Подтверждение оплаты — общее для вебхука ЮKassa и опроса статуса (ниже). Статус берём только
+// из ответа самой ЮKassa по нашим ключам (getPayment), не из тела уведомления. Идемпотентно:
+// заказ, уже вышедший из awaiting_payment, повторно не обрабатывается (проверка и смена статуса
+// идут синхронно, без await между ними, — вебхук и опрос не подтвердят оплату дважды).
+async function confirmPayment(payment) {
+  if (payment?.status !== "succeeded") return false;
+  const order = getOrderByPaymentId(payment.id);
+  if (!order) {
+    console.error("YooKassa: no order for paymentId", payment.id);
+    return false;
+  }
+  if (order.status !== "awaiting_payment") return false;
+
+  updateOrder(order.orderId, { status: "paid" });
+  // Скидку гасим только после успешной оплаты: брошенный платёж её не сжигает.
+  if (order.promoId) markPromoUsed(order.promoId, order.orderId);
+  console.log("payment confirmed:", order.orderId);
+
+  // Оплата теперь в НАЧАЛЕ (ФЛОУ-1, 24.09.2026): после неё клиент проходит сценарий
+  // (повод, текст, фото, голос), генерация стартует в конце сценария (greeting.js).
+  // Сцену отсюда открыть нельзя (нет update от клиента) — поэтому кнопка «Начать».
+  // Сообщение сразу — чтобы клиент видел, что оплата прошла (просьба Александра 24.09).
+  await bot.telegram
+    .sendMessage(
+      order.chatId,
+      "✅ Оплата получена, спасибо!\n\nТеперь создадим поздравление — это займёт пару минут: " +
+        "повод, текст, фото и голос. Нажмите «Начать» 👇",
+      Markup.inlineKeyboard([Markup.button.callback("▶️ Начать", `greeting:start:${order.orderId}`)])
+    )
+    .catch((err) => console.error("payment confirmation message failed:", err));
+  return true;
+}
+
 // ЮKassa шлёт уведомление о смене статуса платежа сюда. НЕ доверяем статусу из тела
 // уведомления напрямую (кто угодно может прислать поддельный POST на этот URL) —
 // уведомление используем только как повод переспросить сам платёж у ЮKassa по своим
 // ключам (см. getPayment в services/yookassa.js). ЮKassa повторяет недоставленные
-// уведомления — обработка должна быть идемпотентной (см. проверку order.status ниже).
+// уведомления — обработка идемпотентна (confirmPayment).
 async function handleYookassaWebhook(req, res) {
   try {
     const body = JSON.parse(await readBody(req));
     const paymentId = body?.object?.id;
-    if (!paymentId) {
-      res.writeHead(200).end("ok");
-      return;
-    }
-
-    const payment = await getPayment(paymentId);
-    if (payment.status !== "succeeded") {
-      res.writeHead(200).end("ok"); // не succeeded — canceled/waiting, ничего не делаем
-      return;
-    }
-
-    const order = getOrderByPaymentId(paymentId);
-    if (!order) {
-      console.error("YooKassa webhook: no order for paymentId", paymentId);
-      res.writeHead(200).end("ok");
-      return;
-    }
-    if (order.status !== "awaiting_payment") {
-      res.writeHead(200).end("ok"); // уже обработан — повтор вебхука, идемпотентность
-      return;
-    }
-
-    updateOrder(order.orderId, { status: "paid" });
-    // Скидку гасим только после успешной оплаты: брошенный платёж её не сжигает.
-    if (order.promoId) markPromoUsed(order.promoId, order.orderId);
-    res.writeHead(200).end("ok");
-
-    // Оплата теперь в НАЧАЛЕ (ФЛОУ-1, 24.09.2026): после неё клиент проходит сценарий
-    // (повод, текст, фото, голос), генерация стартует в конце сценария (greeting.js).
-    // Сцену из вебхука открыть нельзя (нет update от клиента) — поэтому кнопка «Начать».
-    // Сообщение сразу — чтобы клиент видел, что оплата прошла (просьба Александра 24.09).
-    await bot.telegram
-      .sendMessage(
-        order.chatId,
-        "✅ Оплата получена, спасибо!\n\nТеперь создадим поздравление — это займёт пару минут: " +
-          "повод, текст, фото и голос. Нажмите «Начать» 👇",
-        Markup.inlineKeyboard([Markup.button.callback("▶️ Начать", `greeting:start:${order.orderId}`)])
-      )
-      .catch((err) => console.error("payment confirmation message failed:", err));
+    res.writeHead(200).end("ok"); // 200 сразу — иначе ЮKassa будет ретраить
+    if (paymentId) await confirmPayment(await getPayment(paymentId));
   } catch (err) {
     console.error("YooKassa webhook error:", err);
-    res.writeHead(200).end("ok"); // 200 всё равно — иначе ЮKassa будет бесконечно ретраить кривой запрос
+    if (!res.headersSent) res.writeHead(200).end("ok");
+  }
+}
+
+// Опрос статуса неоплаченных заказов — страховка на случай, если уведомление ЮKassa не пришло
+// (живой тест 25.09.2026: оплата прошла, а «Оплата получена» клиенту не пришло — адрес
+// уведомлений в кабинете ЮKassa не настроен). Смотрим заказы не старше 3 часов (ссылка живёт
+// ~час) по всем выданным им ссылкам. Список заказов — из базы, поэтому переживает перезапуск.
+const PAYMENT_POLL_MS = 15_000;
+const PAYMENT_POLL_WINDOW_MS = 3 * 60 * 60 * 1000;
+async function pollPendingPayments() {
+  const since = Date.now() - PAYMENT_POLL_WINDOW_MS;
+  const pending = Object.values(allDocs("orders")).filter(
+    (o) => o.status === "awaiting_payment" && o.paymentId && Date.parse(o.createdAt) > since
+  );
+  for (const order of pending) {
+    for (const paymentId of [order.paymentId, ...(order.previousPaymentIds ?? [])]) {
+      try {
+        if (await confirmPayment(await getPayment(paymentId))) break;
+      } catch (err) {
+        console.error("payment poll failed:", paymentId, err.message);
+      }
+    }
   }
 }
 
@@ -309,6 +327,10 @@ createServer((req, res) => {
 bot.telegram.setWebhook(`https://${PUBLIC_DOMAIN}${WEBHOOK_PATH}`).catch((err) => {
   console.error("setWebhook failed:", err.message);
 });
+
+// Опрос оплат: сразу после старта (заказ мог оплатиться, пока бот перезапускался) и далее по таймеру.
+pollPendingPayments().catch((err) => console.error("pollPendingPayments failed:", err));
+setInterval(() => pollPendingPayments().catch((err) => console.error("pollPendingPayments failed:", err)), PAYMENT_POLL_MS);
 
 // Генерации, оборванные перезапуском (деплой), — подхватываем заново.
 resumeInterruptedGenerations(bot.telegram, Object.values(allDocs("orders"))).catch((err) =>
