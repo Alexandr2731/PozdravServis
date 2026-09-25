@@ -140,7 +140,9 @@ export function runGreetingFulfillment(telegram, order) {
  * узнавать сразу, а не из журналов Railway. Без переменной — молча пропускаем.
  */
 export async function notifyAdmin(telegram, text) {
-  const chatId = process.env.ADMIN_CHAT_ID;
+  // Только цифры (и минус у групп): лишний пробел/перенос строки в значении переменной Railway
+  // давал «chat not found» (живой тест 25.09.2026).
+  const chatId = (process.env.ADMIN_CHAT_ID ?? "").replace(/[^\d-]/g, "");
   if (!chatId) return;
   await telegram.sendMessage(chatId, text).catch((err) => console.error("notifyAdmin failed:", err.message));
 }

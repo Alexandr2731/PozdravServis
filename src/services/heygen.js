@@ -3,10 +3,20 @@ import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY;
 const DEFAULT_VOICE_ID = "ba1544b5eae84eae9cb92598f078b6b0"; // Oleg, russian male
 
+// HeyGen сверяет Content-Type с содержимым файла. Фото из Telegram — JPEG, а мультяшная
+// стилизация (openai.js, stylizeCartoon) возвращает PNG — с жёстким «image/jpeg» HeyGen
+// отвечал «Content type not match image/jpeg != image/png» (живой тест 25.09.2026).
+// Тип определяем по первым байтам файла.
+function imageContentType(buffer) {
+  if (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) return "image/png";
+  if (buffer.subarray(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  return "image/jpeg";
+}
+
 async function uploadImageAsset(photoBuffer) {
   const res = await fetchWithTimeout("https://upload.heygen.com/v1/asset", {
     method: "POST",
-    headers: { "x-api-key": HEYGEN_API_KEY, "Content-Type": "image/jpeg" },
+    headers: { "x-api-key": HEYGEN_API_KEY, "Content-Type": imageContentType(photoBuffer) },
     body: photoBuffer,
   });
   const json = await res.json();
