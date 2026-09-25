@@ -6,7 +6,7 @@ import { greetingPurchaseWizard } from "./scenes/greetingPurchase.js";
 import { songWizard } from "./scenes/song.js";
 import { getPayment } from "./services/yookassa.js";
 import { getOrder, getOrderByPaymentId, updateOrder, findUnfinishedPaidOrder } from "./utils/orderStore.js";
-import { declineGreetingOrder, declineMessage } from "./services/greetingDecline.js";
+import { declineGreetingOrder, sendDeclineMessage } from "./services/greetingDecline.js";
 import { markPromoUsed } from "./utils/promoStore.js";
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
@@ -93,7 +93,7 @@ stage.action(/^greeting:decline:(.+)$/, async (ctx) => {
   const result = declineGreetingOrder(ctx.match[1], String(ctx.from.id));
   if (!result.ok) return ctx.answerCbQuery(result.reason, { show_alert: true });
   await ctx.answerCbQuery();
-  await ctx.reply(declineMessage(result.promo));
+  await sendDeclineMessage(ctx, result.promo);
 });
 
 stage.help((ctx) =>

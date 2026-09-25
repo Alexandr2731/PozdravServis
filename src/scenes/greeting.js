@@ -6,7 +6,7 @@ import { occasionKeyboard, occasionLabel } from "../constants/occasions.js";
 import { getOrder, updateOrder } from "../utils/orderStore.js";
 import { hasFreeRevisionsLeft, accumulateVariants } from "../utils/revisionRules.js";
 import { fulfillGreetingOrder } from "../services/greetingFulfillment.js";
-import { declineGreetingOrder, declineMessage } from "../services/greetingDecline.js";
+import { declineGreetingOrder, sendDeclineMessage } from "../services/greetingDecline.js";
 
 // Сцена запускается ТОЛЬКО по уже оплаченному заказу (решение 24.09.2026, knowledge/tasks.md
 // ФЛОУ-1): оплата — в greetingPurchase.js, вход сюда — ctx.scene.enter("greeting-wizard",
@@ -256,7 +256,8 @@ export const greetingWizard = new Scenes.WizardScene(
     if (action === "decline") {
       await ctx.answerCbQuery();
       const result = declineGreetingOrder(ctx.wizard.state.orderId, String(ctx.from.id));
-      await ctx.reply(result.ok ? declineMessage(result.promo) : result.reason);
+      if (result.ok) await sendDeclineMessage(ctx, result.promo);
+      else await ctx.reply(result.reason);
       return ctx.scene.leave();
     }
 

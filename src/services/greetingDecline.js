@@ -1,3 +1,4 @@
+import { Markup } from "telegraf";
 import { getOrder, updateOrder } from "../utils/orderStore.js";
 import { issuePromo, formatPromoDate } from "../utils/promoStore.js";
 
@@ -25,11 +26,16 @@ export function declineGreetingOrder(orderId, userId) {
   return { ok: true, promo };
 }
 
-export function declineMessage(promo) {
-  return (
-    "Жаль, что не подошло 😔\n\n" +
-    `Дарим скидку ${promo.percent}% на следующее анимированное поздравление — ` +
-    `она применится сама при оплате. Действует до ${formatPromoDate(promo.expiresAt)}.\n\n` +
-    "Попробовать ещё раз — /start."
+// Одно сообщение для отказа и от текста, и от готового видео. Кнопка ведёт в покупку
+// (service:video в bot.js), где скидка уже подставится сама.
+export function sendDeclineMessage(ctx, promo) {
+  return ctx.reply(
+    "Нам очень жаль, что поздравление получилось не таким, как тебе хотелось. " +
+      "Приносим свои извинения 🙏\n\n" +
+      `В знак извинения дарим тебе скидку ${promo.percent}% на следующее анимированное поздравление:\n` +
+      "• применится автоматически при оплате — ничего вводить не нужно;\n" +
+      `• действует до ${formatPromoDate(promo.expiresAt)} включительно.\n\n` +
+      "Будем рады попробовать ещё раз и сделать поздравление, которое точно понравится.",
+    Markup.inlineKeyboard([Markup.button.callback("🎬 Новое поздравление со скидкой", "service:video")])
   );
 }
