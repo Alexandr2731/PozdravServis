@@ -4,6 +4,7 @@ import { stylizeCartoon } from "./openai.js";
 import { convertOggToMp3 } from "../utils/audio.js";
 import { updateOrder } from "../utils/orderStore.js";
 import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
+import { compressVideo, TELEGRAM_VIDEO_LIMIT_BYTES } from "../utils/video.js";
 
 // Отделено от greeting.js: вызывается в конце сценария (greeting.js, startGeneration) по уже
 // оплаченному заказу и работает после выхода из сцены — поэтому берёт всё из заказа, а не из wizard.state.
@@ -26,6 +27,12 @@ function reviewKeyboard(orderId, isFreeTrial) {
 
 /** Генерирует видео по уже оплаченному заказу и присылает клиенту с кнопками отзыва. */
 export async function fulfillGreetingOrder(telegram, order) {
+  // Видео уже создано в прошлой попытке, а сбой был при отправке в Telegram — не генерируем
+  // заново (HeyGen стоит денег), только отправляем готовое.
+  if (order.variants?.length) {
+    return sendReadyVideo(telegram, updateOrder(order.orderId, { status: "awaiting_review" }));
+  }
+
   // fetchWithTimeout, не голый fetch — скачивание с серверов Telegram иногда зависает
   // посреди запроса на этой инфраструктуре (см. тот же фикс в greeting.js, найдено живым
   // тестом 23.09.2026).
@@ -60,15 +67,23 @@ export async function fulfillGreetingOrder(telegram, order) {
 }
 
 /**
- * Присылает готовое видео. Первый раз — по ссылке HeyGen; Telegram хранит файл у себя и
+ * Присылает готовое видео. Первый раз — скачиваем у HeyGen и шлём файлом; Telegram хранит его у себя и
  * возвращает file_id — запоминаем его: ссылка HeyGen со временем истекает, а по file_id видео
  * можно прислать снова когда угодно («🎬 Мои поздравления», «📝 Черновики»).
  * Кнопки «Забрать / Не подошло» — только пока клиент не решил (awaiting_review).
  */
 export async function sendReadyVideo(telegram, order, { caption = "Готово! Вот Ваше поздравление 🎉" } = {}) {
-  const source = order.videoFileId || order.variants.at(-1);
   const extra = order.status === "awaiting_review" ? reviewKeyboard(order.orderId, order.isFreeTrial) : {};
-  const message = await telegram.sendVideo(order.chatId, source, { caption, ...extra });
+  let source = order.videoFileId;
+  if (!source) {
+    // Первая отправка: качаем сами и шлём файлом — по ссылке Telegram берёт только до 20 МБ.
+    const res = await fetchWithTimeout(order.variants.at(-1), {}, 120_000);
+    if (!res.ok) throw new Error(`Не удалось скачать видео HeyGen: HTTP ${res.status}`);
+    let buffer = Buffer.from(await res.arrayBuffer());
+    if (buffer.length > TELEGRAM_VIDEO_LIMIT_BYTES) buffer = await compressVideo(buffer);
+    source = { source: buffer, filename: "pozdravlenie.mp4" };
+  }
+  const message = await telegram.sendVideo(order.chatId, source, { caption, supports_streaming: true, ...extra });
   if (!order.videoFileId && message?.video?.file_id) {
     updateOrder(order.orderId, { videoFileId: message.video.file_id });
   }
