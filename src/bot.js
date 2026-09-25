@@ -11,6 +11,7 @@ import { markPromoUsed } from "./utils/promoStore.js";
 import { runGreetingFulfillment, sendReadyVideo } from "./services/greetingFulfillment.js";
 import { mainMenuKeyboard, draftsMessage, readyMessage } from "./services/orderFolders.js";
 import { registerVisit } from "./utils/userStore.js";
+import { initDocStore, flushDocStore } from "./utils/docStore.js";
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
 const stage = new Scenes.Stage([greetingWizard, greetingPurchaseWizard, songWizard]);
@@ -278,6 +279,11 @@ async function handleYookassaWebhook(req, res) {
   }
 }
 
+// Сначала база (docStore.js: подключение, таблицы, загрузка записей в память), и только
+// потом приём апдейтов — иначе первые сообщения после деплоя увидели бы пустые заказы.
+// Без базы бот не стартует: работать «вслепую» опаснее (оплаченные заказы не найдутся).
+await initDocStore();
+
 createServer((req, res) => {
   if (req.url === WEBHOOK_PATH) return webhookHandler(req, res);
   if (req.url === YOOKASSA_WEBHOOK_PATH && req.method === "POST") return handleYookassaWebhook(req, res);
@@ -288,5 +294,11 @@ bot.telegram.setWebhook(`https://${PUBLIC_DOMAIN}${WEBHOOK_PATH}`).catch((err) =
   console.error("setWebhook failed:", err.message);
 });
 
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
-process.once("SIGINT", () => bot.stop("SIGINT"));
+// При остановке (деплой) дописываем в базу изменения, которые ещё в пути.
+async function shutdown(signal) {
+  console.log(`${signal}: сохраняем данные и выходим`);
+  await flushDocStore().catch((err) => console.error("flushDocStore failed:", err));
+  process.exit(0);
+}
+process.once("SIGTERM", () => shutdown("SIGTERM"));
+process.once("SIGINT", () => shutdown("SIGINT"));

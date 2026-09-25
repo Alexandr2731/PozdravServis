@@ -1,36 +1,16 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { allDocs, saveDoc } from "./docStore.js";
 import crypto from "node:crypto";
 
-// Заказы Услуги 1 (анимированное поздравление) между "создан платёж" и "оплата
-// подтверждена вебхуком" — тот же простой JSON-файл на диске, что и balanceStore.js
-// (см. её же обоснование: session() Telegraf не переживает рестарт процесса на Railway,
-// а платёж может прийти уже после рестарта). Не замена БД, временное решение до Supabase.
+// Заказы Услуги 1 (анимированное поздравление) — в PostgreSQL через docStore.js (таблица orders).
+// Хранятся вне session() Telegraf: она не переживает рестарт, а платёж может прийти уже после него.
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, "..", "..", "data");
-const ORDERS_FILE = join(DATA_DIR, "greetingOrders.json");
-
-function readAll() {
-  if (!existsSync(ORDERS_FILE)) return {};
-  try {
-    return JSON.parse(readFileSync(ORDERS_FILE, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-function writeAll(orders) {
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(ORDERS_FILE, JSON.stringify(orders, null, 2), "utf8");
-}
+const readAll = () => allDocs("orders");
 
 export function createOrder(data) {
   const orderId = crypto.randomUUID();
   const orders = readAll();
   orders[orderId] = { ...data, orderId, revisionCount: 0, variants: [], createdAt: new Date().toISOString() };
-  writeAll(orders);
+  saveDoc("orders", orderId, orders[orderId]);
   return orderId;
 }
 
@@ -56,7 +36,7 @@ export function updateOrder(orderId, patch) {
   const orders = readAll();
   if (!orders[orderId]) throw new Error(`Заказ ${orderId} не найден`);
   orders[orderId] = { ...orders[orderId], ...patch };
-  writeAll(orders);
+  saveDoc("orders", orderId, orders[orderId]);
   return orders[orderId];
 }
 

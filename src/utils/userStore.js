@@ -1,6 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { allDocs, saveDoc } from "./docStore.js";
 
 // Клиенты по Telegram ID (решение Александра 25.09.2026, knowledge/tasks.md ФЛОУ-1):
 // - первый визит и источник — метка из ссылки t.me/<бот>?start=<метка> (реклама, блогер,
@@ -8,25 +6,9 @@ import { fileURLToPath } from "node:url";
 //   программы. Записывается ОДИН раз, при первом входе, — повторный вход по другой ссылке
 //   источник не перезаписывает;
 // - какие бесплатные пробы клиент уже получил (по одной на услугу).
-// Тот же JSON-файл на диске, что orderStore.js, — временно, до БД (ДАННЫЕ-1).
+// Хранятся в PostgreSQL через docStore.js (таблица users).
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, "..", "..", "data");
-const USERS_FILE = join(DATA_DIR, "users.json");
-
-function readAll() {
-  if (!existsSync(USERS_FILE)) return {};
-  try {
-    return JSON.parse(readFileSync(USERS_FILE, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-function writeAll(users) {
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(USERS_FILE, JSON.stringify(users, null, 2), "utf8");
-}
+const readAll = () => allDocs("users");
 
 // Метка приходит от клиента (любой может подставить свою ссылку) — оставляем только то,
 // что Telegram вообще допускает в start-параметре: латиница, цифры, _ и -, до 64 символов.
@@ -45,9 +27,9 @@ export function registerVisit(from, startPayload) {
   const now = new Date().toISOString();
   const existing = users[userId];
   if (existing) {
-    existing.lastSeenAt = now;
-    writeAll(users);
-    return { user: existing, isNew: false };
+    const user = { ...existing, lastSeenAt: now };
+    saveDoc("users", userId, user);
+    return { user, isNew: false };
   }
   const source = cleanSource(startPayload);
   const referrer = source?.startsWith("ref_") ? source.slice(4) : null;
@@ -61,7 +43,7 @@ export function registerVisit(from, startPayload) {
     lastSeenAt: now,
     freeTrialsUsed: {},
   };
-  writeAll(users);
+  saveDoc("users", userId, users[userId]);
   return { user: users[userId], isNew: true };
 }
 
@@ -74,6 +56,8 @@ export function hasUsedFreeTrial(userId, service) {
 export function markFreeTrialUsed(userId, service, orderId) {
   const users = readAll();
   if (!users[userId]) throw new Error(`Клиент ${userId} не найден`);
-  users[userId].freeTrialsUsed = { ...users[userId].freeTrialsUsed, [service]: { orderId, at: new Date().toISOString() } };
-  writeAll(users);
+  saveDoc("users", userId, {
+    ...users[userId],
+    freeTrialsUsed: { ...users[userId].freeTrialsUsed, [service]: { orderId, at: new Date().toISOString() } },
+  });
 }

@@ -1,14 +1,12 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
+import { allDocs, saveDoc } from "./docStore.js";
 import crypto from "node:crypto";
 
 // Промокоды за отказ от заказа — вместо прежнего «половина стоимости баллами» (решение
 // Александра 25.09.2026, knowledge/tasks.md ФЛОУ-1). Промокод — не текстовый код, а скидка,
 // привязанная к Telegram-аккаунту клиента: бот сам применяет её при следующей покупке,
 // передать её другому или использовать дважды нельзя. Скидка действует только на ту
-// услугу, от которой клиент отказался. Тот же JSON-файл на диске, что orderStore.js, —
-// временно, до БД (ДАННЫЕ-1).
+// услугу, от которой клиент отказался. Хранятся в PostgreSQL
+// через docStore.js (таблица promos).
 
 // Условия по каждой услуге отдельно — для разных услуг скидка может быть разной.
 // 50% и 30 дней — предварительно, пересмотреть после расчёта себестоимости.
@@ -16,23 +14,7 @@ export const PROMO_RULES = {
   greeting: { percent: 50, days: 30 },
 };
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const DATA_DIR = join(__dirname, "..", "..", "data");
-const PROMOS_FILE = join(DATA_DIR, "promos.json");
-
-function readAll() {
-  if (!existsSync(PROMOS_FILE)) return {};
-  try {
-    return JSON.parse(readFileSync(PROMOS_FILE, "utf8"));
-  } catch {
-    return {};
-  }
-}
-
-function writeAll(promos) {
-  mkdirSync(DATA_DIR, { recursive: true });
-  writeFileSync(PROMOS_FILE, JSON.stringify(promos, null, 2), "utf8");
-}
+const readAll = () => allDocs("promos");
 
 /** Выдаёт клиенту скидку на услугу по правилам PROMO_RULES. */
 export function issuePromo({ userId, service, sourceOrderId }) {
@@ -51,7 +33,7 @@ export function issuePromo({ userId, service, sourceOrderId }) {
     expiresAt,
     usedByOrderId: null,
   };
-  writeAll(promos);
+  saveDoc("promos", promoId, promos[promoId]);
   return promos[promoId];
 }
 
@@ -67,8 +49,7 @@ export function findActivePromo(userId, service) {
 export function markPromoUsed(promoId, orderId) {
   const promos = readAll();
   if (!promos[promoId] || promos[promoId].usedByOrderId) return;
-  promos[promoId].usedByOrderId = orderId;
-  writeAll(promos);
+  saveDoc("promos", promoId, { ...promos[promoId], usedByOrderId: orderId });
 }
 
 /** Цена со скидкой, в целых рублях (не меньше 1 ₽ — минимальная сумма платежа). */
