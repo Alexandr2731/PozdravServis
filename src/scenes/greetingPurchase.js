@@ -1,6 +1,6 @@
 import { Scenes, Markup } from "telegraf";
 import { createPayment } from "../services/yookassa.js";
-import { createOrder, updateOrder } from "../utils/orderStore.js";
+import { createOrder, getOrder, updateOrder } from "../utils/orderStore.js";
 import { findActivePromo, applyPromo, formatPromoDate } from "../utils/promoStore.js";
 import { registerVisit, hasUsedFreeTrial, markFreeTrialUsed } from "../utils/userStore.js";
 
@@ -26,6 +26,36 @@ export function greetingPriceRub() {
     throw new Error(`GREETING_PRICE_RUB задан некорректно: "${raw}"`);
   }
   return price;
+}
+
+/**
+ * Создаёт платёж ЮKassa по уже созданному заказу и присылает кнопку оплаты. Вызывается и при
+ * покупке, и из черновиков (ссылка живёт ~час — по истечении клиент берёт новую, не проходя
+ * покупку заново). Прежний paymentId сохраняем: по старой ссылке тоже могли успеть оплатить.
+ */
+export async function sendPaymentLink(ctx, order) {
+  try {
+    const { paymentId, confirmationUrl } = await createPayment({
+      amountRub: order.priceRub,
+      description: `PozdravServis — анимированное поздравление (заказ ${order.orderId})`,
+      returnUrl: `https://t.me/${(await ctx.telegram.getMe()).username}`,
+      customer: { email: order.email },
+    });
+    updateOrder(order.orderId, {
+      paymentId,
+      previousPaymentIds: order.paymentId ? [...(order.previousPaymentIds ?? []), order.paymentId] : [],
+    });
+
+    // Кнопка вместо голой длинной ссылки в тексте (живой прогон 23.09.2026, knowledge/tasks.md ОПЛАТА-1).
+    await ctx.reply(
+      "Нажмите кнопку, чтобы оплатить. Сразу после оплаты мы напишем сюда — и начнём создавать поздравление.\n\n" +
+        "Ссылка действует около часа.",
+      Markup.inlineKeyboard([Markup.button.url(`💳 Оплатить ${order.priceRub} ₽`, confirmationUrl)])
+    );
+  } catch (err) {
+    console.error("createPayment failed:", order.orderId, err);
+    await ctx.reply("Не получилось создать ссылку на оплату. Попробуйте, пожалуйста, чуть позже — /start.");
+  }
 }
 
 // Бесплатная проба — один раз на Telegram ID (решение Александра 25.09.2026, knowledge/tasks.md
@@ -121,24 +151,7 @@ export const greetingPurchaseWizard = new Scenes.WizardScene(
       status: "awaiting_payment",
     });
 
-    try {
-      const { paymentId, confirmationUrl } = await createPayment({
-        amountRub: price,
-        description: `PozdravServis — анимированное поздравление (заказ ${orderId})`,
-        returnUrl: `https://t.me/${(await ctx.telegram.getMe()).username}`,
-        customer: { email },
-      });
-      updateOrder(orderId, { paymentId });
-
-      // Кнопка вместо голой длинной ссылки в тексте (живой прогон 23.09.2026, knowledge/tasks.md ОПЛАТА-1).
-      await ctx.reply(
-        "Нажмите кнопку, чтобы оплатить. Сразу после оплаты мы напишем сюда — и начнём создавать поздравление.\n\n" +
-          "Ссылка действует около часа.",
-        Markup.inlineKeyboard([Markup.button.url(`💳 Оплатить ${price} ₽`, confirmationUrl)])
-      );
-    } catch (err) {
-      await ctx.reply(`Не получилось создать платёж: ${err.message}. Попробуйте ещё раз позже — /start.`);
-    }
+    await sendPaymentLink(ctx, getOrder(orderId));
     return ctx.scene.leave();
   }
 );

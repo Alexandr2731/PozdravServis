@@ -38,9 +38,18 @@ export function getOrder(orderId) {
   return readAll()[orderId];
 }
 
+// previousPaymentIds — ссылки, выданные раньше (кнопка «Оплатить» в черновиках создаёт новую):
+// клиент мог оплатить и по старой — такой платёж тоже должен найти свой заказ.
 export function getOrderByPaymentId(paymentId) {
   const orders = readAll();
-  return Object.values(orders).find((o) => o.paymentId === paymentId);
+  return Object.values(orders).find((o) => o.paymentId === paymentId || o.previousPaymentIds?.includes(paymentId));
+}
+
+/** Все заказы клиента, новые первыми. */
+export function listUserOrders(userId) {
+  return Object.values(readAll())
+    .filter((o) => o.userId === userId)
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
 export function updateOrder(orderId, patch) {
