@@ -8,6 +8,7 @@ import { getPayment } from "./services/yookassa.js";
 import { getOrder, getOrderByPaymentId, updateOrder, findUnfinishedPaidOrder } from "./utils/orderStore.js";
 import { declineGreetingOrder, sendDeclineMessage } from "./services/greetingDecline.js";
 import { markPromoUsed } from "./utils/promoStore.js";
+import { registerVisit } from "./utils/userStore.js";
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
 const stage = new Scenes.Stage([greetingWizard, greetingPurchaseWizard, songWizard]);
@@ -31,6 +32,12 @@ const serviceKeyboard = Markup.inlineKeyboard([
 // не теряется — service:video продолжит его (findUnfinishedPaidOrder).
 stage.start(async (ctx) => {
   await ctx.scene.leave();
+  // Учёт клиента и источника (метка из ссылки ?start=...) — userStore.js.
+  try {
+    registerVisit(ctx.from, ctx.payload);
+  } catch (err) {
+    console.error("registerVisit failed:", err); // учёт не должен ломать приветствие
+  }
   await ctx.reply(
     `Здравствуйте, ${ctx.from.first_name || "друг"}! 👋\n\n` +
       "Мы — «PozdravServis», сервис креативных поздравлений с помощью ИИ.\n\n" +
