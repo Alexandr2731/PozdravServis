@@ -1,4 +1,4 @@
-// Правила "вариантов / бесплатной переделки / возврата баллами" — перенесены как
+// Правила "вариантов / бесплатной переделки / отказа" — перенесены как
 // ПРОВЕРЕННЫЕ ЦИФРЫ из den-rozhdeniya (birthday-service/src/types.ts,
 // orderStateMachine.ts), не как архитектура (там был целый класс state machine —
 // сознательно не переносим, см. knowledge/best-of-den-rozhdeniya-2026-09-23.md).
@@ -13,9 +13,6 @@
  *  в den-rozhdeniya после живого теста, первая версия посчитала неверно). */
 export const FREE_REVISIONS_LIMIT = 1;
 
-/** Доля стоимости этапа, которая возвращается баллами, если ни один вариант не подошёл. */
-export const REFUND_SHARE = 0.5;
-
 /** Есть ли ещё бесплatные попытки у этапа (revisionCount — сколько переделок уже
  *  использовано, начинается с 0 после самой первой генерации). */
 export function hasFreeRevisionsLeft(revisionCount) {
@@ -23,17 +20,12 @@ export function hasFreeRevisionsLeft(revisionCount) {
 }
 
 /**
- * Можно ли предложить клиенту возврат баллами прямо сейчас. Возврат — только ПОСЛЕ
- * того, как бесплатная переделка уже использована, иначе клиент мог бы забрать баллы,
+ * Можно ли предложить клиенту отказ со скидкой прямо сейчас. Отказ — только ПОСЛЕ
+ * того, как бесплатная переделка уже использована, иначе клиент мог бы получить скидку,
  * даже не попробовав второй раунд вариантов (та же защита, что в den-rozhdeniya).
  */
 export function canOfferRefund(revisionCount) {
   return !hasFreeRevisionsLeft(revisionCount);
-}
-
-/** Сколько баллов вернуть за этап данной стоимости. */
-export function refundAmount(stagePriceRub) {
-  return stagePriceRub * REFUND_SHARE;
 }
 
 /**

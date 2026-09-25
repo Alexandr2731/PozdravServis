@@ -1,6 +1,7 @@
 import { Scenes, Markup } from "telegraf";
 import { createPayment } from "../services/yookassa.js";
 import { createOrder, updateOrder } from "../utils/orderStore.js";
+import { findActivePromo, applyPromo, formatPromoDate } from "../utils/promoStore.js";
 
 // Покупка Услуги 1 — ДО любой работы над поздравлением (решение Александра 24.09.2026,
 // knowledge/tasks.md ФЛОУ-1): выбор услуги -> стоимость и варианты покупки -> оплата ->
@@ -36,7 +37,14 @@ export const greetingPurchaseWizard = new Scenes.WizardScene(
       await ctx.reply(`Оплата пока недоступна: ${err.message}. Попробуй позже.`);
       return ctx.scene.leave();
     }
-    ctx.wizard.state.price = price;
+    // Скидка за прошлый отказ от этой же услуги (promoStore.js) применяется сама.
+    const promo = findActivePromo(String(ctx.from.id), "greeting");
+    const finalPrice = applyPromo(price, promo);
+    ctx.wizard.state.price = finalPrice;
+    ctx.wizard.state.promoId = promo?.promoId ?? null;
+    const priceLine = promo
+      ? `Стоимость: ${finalPrice} ₽ вместо ${price} ₽ — твоя скидка ${promo.percent}% (действует до ${formatPromoDate(promo.expiresAt)}).`
+      : `Стоимость: ${price} ₽ — разовая покупка.`;
     await ctx.reply(
       "🎬 Анимированное поздравление\n\n" +
         "Оживим фото: человек на нём сам прочитает поздравление — голосом того, кто поздравляет, " +
@@ -45,10 +53,9 @@ export const greetingPurchaseWizard = new Scenes.WizardScene(
         "• текст — свой или напишем за тебя: 2 варианта на выбор и ещё 2, если первые не подойдут\n" +
         "• обычный текст или стихи\n" +
         "• готовое видео прямо сюда, в чат\n\n" +
-        `Стоимость: ${price} ₽ — разовая покупка.\n\n` +
-        "Не понравится — вернём половину стоимости баллами на счёт (1 балл = 1 ₽), " +
-        "их можно потратить на следующий заказ.",
-      Markup.inlineKeyboard([Markup.button.callback(`💳 Купить за ${price} ₽`, "purchase:buy")])
+        `${priceLine}\n\n` +
+        "Не понравится — дадим скидку 50% на следующее анимированное поздравление.",
+      Markup.inlineKeyboard([Markup.button.callback(`💳 Купить за ${finalPrice} ₽`, "purchase:buy")])
     );
     return ctx.wizard.next();
   },
@@ -74,6 +81,7 @@ export const greetingPurchaseWizard = new Scenes.WizardScene(
       userId: String(ctx.from.id),
       email,
       priceRub: price,
+      promoId: ctx.wizard.state.promoId,
       status: "awaiting_payment",
     });
 

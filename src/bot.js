@@ -6,8 +6,8 @@ import { greetingPurchaseWizard } from "./scenes/greetingPurchase.js";
 import { songWizard } from "./scenes/song.js";
 import { getPayment } from "./services/yookassa.js";
 import { getOrder, getOrderByPaymentId, updateOrder, findUnfinishedPaidOrder } from "./utils/orderStore.js";
-import { refundGreetingOrder } from "./services/greetingRefund.js";
-import { getBalance } from "./utils/balanceStore.js";
+import { declineGreetingOrder, declineMessage } from "./services/greetingDecline.js";
+import { markPromoUsed } from "./utils/promoStore.js";
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
 const stage = new Scenes.Stage([greetingWizard, greetingPurchaseWizard, songWizard]);
@@ -44,7 +44,7 @@ stage.start(async (ctx) => {
       "1. Выбираешь услугу и оплачиваешь\n" +
       "2. Выбираешь повод, присылаешь фото и текст (или просишь помочь с текстом)\n" +
       "3. Получаешь готовое видео прямо сюда\n" +
-      "4. Понравилось — забираешь. Не понравилось — вернём половину стоимости баллами на счёт"
+      "4. Понравилось — забираешь. Не понравилось — дадим скидку 50% на следующее поздравление"
   );
   return ctx.reply("С чего начнём?", serviceKeyboard);
 });
@@ -77,7 +77,7 @@ stage.action(/^greeting:start:(.+)$/, async (ctx) => {
 });
 
 // Без бесплатной переделки видео (решено 2026-09-23) — сразу развилка: забрал результат,
-// или отказ с возвратом половины баллами. Текст клиент уже согласовал в сценарии
+// или отказ со скидкой на следующий заказ. Текст клиент уже согласовал в сценарии
 // (greeting.js), поэтому предмет спора на этом шаге — только сама генерация видео.
 stage.action(/^greeting:accept:(.+)$/, async (ctx) => {
   const order = getOrder(ctx.match[1]);
@@ -89,19 +89,11 @@ stage.action(/^greeting:accept:(.+)$/, async (ctx) => {
   await ctx.reply("Спасибо! Если захочешь сделать ещё одно поздравление — жми /start.");
 });
 
-stage.action(/^greeting:refund:(.+)$/, async (ctx) => {
-  const result = refundGreetingOrder(ctx.match[1], String(ctx.from.id));
+stage.action(/^greeting:decline:(.+)$/, async (ctx) => {
+  const result = declineGreetingOrder(ctx.match[1], String(ctx.from.id));
   if (!result.ok) return ctx.answerCbQuery(result.reason, { show_alert: true });
   await ctx.answerCbQuery();
-  await ctx.reply(
-    `Жаль, что не подошло. Начислили ${result.amount.toFixed(0)} баллов на счёт — итого у тебя ${result.balance.toFixed(0)} ` +
-      `баллов, их можно использовать на следующий заказ. Проверить баланс — /balance.`
-  );
-});
-
-stage.command("balance", async (ctx) => {
-  const balance = getBalance(String(ctx.from.id));
-  await ctx.reply(`Твой баланс: ${balance.toFixed(0)} баллов.`);
+  await ctx.reply(declineMessage(result.promo));
 });
 
 stage.help((ctx) =>
@@ -109,8 +101,7 @@ stage.help((ctx) =>
     "Как это работает:\n\n" +
       "1. /start — выбери услугу и оплати\n" +
       "2. Выбери повод, пришли фото и текст (или попроси помочь с текстом)\n" +
-      "3. Дождись готового видео (обычно до 10 минут)\n\n" +
-      "/balance — баланс баллов"
+      "3. Дождись готового видео (обычно до 10 минут)"
   )
 );
 
@@ -178,6 +169,8 @@ async function handleYookassaWebhook(req, res) {
     }
 
     updateOrder(order.orderId, { status: "paid" });
+    // Скидку гасим только после успешной оплаты: брошенный платёж её не сжигает.
+    if (order.promoId) markPromoUsed(order.promoId, order.orderId);
     res.writeHead(200).end("ok");
 
     // Оплата теперь в НАЧАЛЕ (ФЛОУ-1, 24.09.2026): после неё клиент проходит сценарий

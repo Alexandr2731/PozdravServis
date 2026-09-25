@@ -6,7 +6,7 @@ import { occasionKeyboard, occasionLabel } from "../constants/occasions.js";
 import { getOrder, updateOrder } from "../utils/orderStore.js";
 import { hasFreeRevisionsLeft, accumulateVariants } from "../utils/revisionRules.js";
 import { fulfillGreetingOrder } from "../services/greetingFulfillment.js";
-import { refundGreetingOrder } from "../services/greetingRefund.js";
+import { declineGreetingOrder, declineMessage } from "../services/greetingDecline.js";
 
 // Сцена запускается ТОЛЬКО по уже оплаченному заказу (решение 24.09.2026, knowledge/tasks.md
 // ФЛОУ-1): оплата — в greetingPurchase.js, вход сюда — ctx.scene.enter("greeting-wizard",
@@ -45,7 +45,7 @@ const textStyleKeyboard = Markup.inlineKeyboard([
 // видео, где сознательно только 1 вариант за попытку), выбор для клиента ощутимо лучше.
 // Раундов — 1 + FREE_REVISIONS_LIMIT (revisionRules.js), т.е. 2 варианта + ещё 2. Варианты
 // копятся: после переделки можно выбрать любой из всех 4. Когда переделки кончились —
-// вместо "Переделать" свой текст или отказ с возвратом половины баллами (оплата уже прошла).
+// вместо "Переделать" свой текст или отказ со скидкой на следующий заказ (оплата уже прошла).
 const VARIANT_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"];
 
 function textVariantKeyboard(variantsCount, canRevise) {
@@ -58,7 +58,7 @@ function textVariantKeyboard(variantsCount, canRevise) {
     rows.push([Markup.button.callback("✏️ Переделать", "textvariant:edit")]);
   } else {
     rows.push([Markup.button.callback("✍️ Пришлю свой текст", "textvariant:own")]);
-    rows.push([Markup.button.callback("💰 Отказаться — вернуть половину баллами", "textvariant:refund")]);
+    rows.push([Markup.button.callback("🎟 Отказаться — скидка 50% на следующее", "textvariant:decline")]);
   }
   return Markup.inlineKeyboard(rows);
 }
@@ -107,7 +107,7 @@ async function generateAndShowVariants(ctx) {
   const footer = canRevise
     ? ""
     : "\n\nМожно выбрать любой из вариантов — и новых, и прошлых. Если ни один не подходит — " +
-      "пришли свой текст или откажись от заказа: вернём половину стоимости баллами.";
+      "пришли свой текст или откажись от заказа — дадим скидку 50% на следующее поздравление.";
   await ctx.reply(
     `Вот что получилось:\n\n${message}${footer}`,
     textVariantKeyboard(ctx.wizard.state.textVariants.length, canRevise)
@@ -253,15 +253,10 @@ export const greetingWizard = new Scenes.WizardScene(
       return ctx.wizard.next(); // -> шаг "свой текст"
     }
 
-    if (action === "refund") {
+    if (action === "decline") {
       await ctx.answerCbQuery();
-      const result = refundGreetingOrder(ctx.wizard.state.orderId, String(ctx.from.id));
-      await ctx.reply(
-        result.ok
-          ? `Жаль, что не подошло. Начислили ${result.amount.toFixed(0)} баллов на счёт — итого у тебя ` +
-              `${result.balance.toFixed(0)} баллов, их можно использовать на следующий заказ. Баланс — /balance.`
-          : result.reason
-      );
+      const result = declineGreetingOrder(ctx.wizard.state.orderId, String(ctx.from.id));
+      await ctx.reply(result.ok ? declineMessage(result.promo) : result.reason);
       return ctx.scene.leave();
     }
 
