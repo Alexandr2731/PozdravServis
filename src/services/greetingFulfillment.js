@@ -37,13 +37,15 @@ export async function fulfillGreetingOrder(telegram, order) {
   // посреди запроса на этой инфраструктуре (см. тот же фикс в greeting.js, найдено живым
   // тестом 23.09.2026).
   const photoFileLink = await telegram.getFileLink(order.photoFileId);
-  let photoBuffer = Buffer.from(await (await fetchWithTimeout(photoFileLink.href, {})).arrayBuffer());
+  const originalPhoto = Buffer.from(await (await fetchWithTimeout(photoFileLink.href, {})).arrayBuffer());
+  let photoBuffer = originalPhoto;
 
   // Мультяшный стиль — подключено и тестируется 23.09.2026 (было заглушкой "в разработке").
   // Отдельный платный вызов OpenAI (gpt-image-1) поверх HeyGen — стоимость учитывать отдельно
   // при определении цены для этого стиля, себестоимость выше реалистичного на эту сумму.
-  if (order.videoStyle === "cartoon") {
-    photoBuffer = await stylizeCartoon(photoBuffer);
+  const isCartoon = order.videoStyle === "cartoon";
+  if (isCartoon) {
+    photoBuffer = await stylizeCartoon(originalPhoto);
   }
 
   let voiceId;
@@ -56,7 +58,21 @@ export async function fulfillGreetingOrder(telegram, order) {
 
   let videoUrl;
   try {
-    videoUrl = await generateGreetingVideo({ photoBuffer, text: order.text, voiceId });
+    try {
+      videoUrl = await generateGreetingVideo({ photoBuffer, text: order.text, voiceId });
+    } catch (err) {
+      if (!isCartoon || !err.message.includes("No face detected")) throw err;
+      // HeyGen не нашёл лицо на мультяшной картинке — перерисовываем крупным портретом и
+      // пробуем ещё раз (живой тест 25.09.2026). Не вышло и так — клиенту предложим реалистичный.
+      console.log("cartoon: no face detected, retrying with close-up", order.orderId);
+      photoBuffer = await stylizeCartoon(originalPhoto, { closeUp: true });
+      try {
+        videoUrl = await generateGreetingVideo({ photoBuffer, text: order.text, voiceId });
+      } catch (retryErr) {
+        if (retryErr.message.includes("No face detected")) retryErr.code = "CARTOON_NO_FACE";
+        throw retryErr;
+      }
+    }
   } finally {
     // Клон нужен только на эту генерацию — освобождаем слот (у тарифа HeyGen их всего 2).
     if (voiceId) await deleteVoice(voiceId).catch((err) => console.error("deleteVoice failed:", err));
@@ -134,8 +150,14 @@ export function runGreetingFulfillment(telegram, order) {
     // Озвучка голосом клиента сейчас невозможна (у HeyGen закончились слоты клонов) —
     // не заставляем ждать, а предлагаем сделать стандартным голосом прямо сейчас.
     const voiceProblem = err.code === "VOICE_CLONE_LIMIT" && order.voiceFileId;
-    const text = voiceProblem
-      ? "😔 К сожалению, прямо сейчас не получается озвучить поздравление Вашим голосом — технический сбой " +
+    const cartoonProblem = err.code === "CARTOON_NO_FACE";
+    const text = cartoonProblem
+      ? "😔 К сожалению, в мультяшном стиле это фото не получилось «оживить» — на рисунке не удалось " +
+        "чётко распознать лицо. Приносим извинения!\n\n" +
+        "Можно сделать видео в реалистичном стиле с этим же фото — или попробовать мультяшный ещё раз. " +
+        "Текст, фото и голос сохранены. Лучше всего подходят фото, где лицо крупно и смотрит в камеру."
+      : voiceProblem
+      ?"😔 К сожалению, прямо сейчас не получается озвучить поздравление Вашим голосом — технический сбой " +
         "на нашей стороне. Приносим извинения!\n\n" +
         "Можно сделать видео стандартным голосом прямо сейчас — или попробовать Вашим голосом ещё раз чуть позже. " +
         "Текст и фото сохранены, заново ничего проходить не нужно."
@@ -143,6 +165,7 @@ export function runGreetingFulfillment(telegram, order) {
         "Ваш текст, фото и голос сохранены — нажмите «Попробовать ещё раз», заново ничего проходить не нужно. " +
         "Если не получится и со второй попытки — напишите нам, разберёмся.";
     const buttons = [
+      ...(cartoonProblem ? [[Markup.button.callback("🎥 Сделать в реалистичном стиле", `greeting:retry-realistic:${order.orderId}`)]] : []),
       ...(voiceProblem ? [[Markup.button.callback("🔊 Сделать стандартным голосом", `greeting:retry-default:${order.orderId}`)]] : []),
       [Markup.button.callback("🔄 Попробовать ещё раз", `greeting:retry:${order.orderId}`)],
     ];

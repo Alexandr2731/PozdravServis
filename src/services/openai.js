@@ -106,17 +106,28 @@ export async function transcribeVoice(audioBuffer, filename = "voice.mp3") {
   return json.text;
 }
 
-export async function stylizeCartoon(photoBuffer) {
+// Картинку потом «оживляет» HeyGen, а ему нужно чётко различимое человеческое лицо: по
+// размытой просьбе «в мультяшном стиле, тот же кадр» на фото со сцены лицо выходило мелким
+// и условным — «No face detected in the image» (живой тест 25.09.2026). Поэтому: объёмный
+// стиль анимационного кино с человеческими пропорциями, лицо крупно и анфас, глаза и рот
+// прорисованы. closeUp — вторая попытка после «лицо не найдено»: портрет по плечи.
+const CARTOON_PROMPT =
+  "Redraw this person as a character from a modern 3D animated family movie (Pixar/Disney style), " +
+  "with realistic human proportions. Keep the likeness clearly recognizable: face shape, hairstyle, " +
+  "skin tone, facial hair, glasses if any. The face must be large, well lit, facing the camera, " +
+  "with both eyes open and a clearly drawn closed mouth, nothing covering the face. " +
+  "Keep the same clothing; simplify the background.";
+const CARTOON_CLOSEUP_PROMPT =
+  CARTOON_PROMPT + " Crop to a head-and-shoulders portrait so the face fills most of the image.";
+
+export async function stylizeCartoon(photoBuffer, { closeUp = false } = {}) {
   if (!OPENAI_API_KEY) {
     throw new Error("OPENAI_API_KEY не задан — добавь его через /settings");
   }
   const form = new FormData();
   form.append("image", new Blob([photoBuffer], { type: "image/jpeg" }), "photo.jpg");
   form.append("model", "gpt-image-1");
-  form.append(
-    "prompt",
-    "Redraw this person in a friendly cartoon/animation style, keep the likeness recognizable, same pose and framing."
-  );
+  form.append("prompt", closeUp ? CARTOON_CLOSEUP_PROMPT : CARTOON_PROMPT);
   const res = await fetchWithTimeout(
     "https://api.openai.com/v1/images/edits",
     {

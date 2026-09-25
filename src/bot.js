@@ -185,6 +185,17 @@ stage.action(/^greeting:retry-default:(.+)$/, async (ctx) => {
   runGreetingFulfillment(ctx.telegram, updateOrder(order.orderId, { voiceFileId: null, voiceFallback: true }));
 });
 
+// Мультяшная картинка не «оживилась» (HeyGen не нашёл лицо) — клиент выбрал реалистичный стиль.
+stage.action(/^greeting:retry-realistic:(.+)$/, async (ctx) => {
+  const order = getOrder(ctx.match[1]);
+  if (!order || order.userId !== String(ctx.from.id) || order.status !== "failed") {
+    return ctx.answerCbQuery("Этот заказ уже в работе или выполнен.", { show_alert: true });
+  }
+  await ctx.answerCbQuery();
+  await ctx.reply("🎥 Делаем в реалистичном стиле. Обычно это занимает не более 10 минут — пришлём видео сюда.");
+  runGreetingFulfillment(ctx.telegram, updateOrder(order.orderId, { videoStyle: "realistic", styleFallback: true }));
+});
+
 // Telegram ID собеседника — чтобы владелец узнал свой и вписал в Railway как ADMIN_CHAT_ID
 // (уведомления о сбоях, notifyAdmin). Команда не в меню: клиентам она не нужна.
 stage.command("id", (ctx) => ctx.reply(`Ваш Telegram ID: ${ctx.from.id}`));
