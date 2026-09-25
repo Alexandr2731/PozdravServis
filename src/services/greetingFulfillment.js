@@ -50,7 +50,7 @@ export async function fulfillGreetingOrder(telegram, order) {
   updateOrder(order.orderId, { variants: [...order.variants, videoUrl], status: "awaiting_review" });
 
   await telegram.sendVideo(order.chatId, videoUrl, {
-    caption: "Готово! Вот твоё поздравление 🎉",
+    caption: "Готово! Вот Ваше поздравление 🎉",
     ...reviewKeyboard(order.orderId),
   });
 }

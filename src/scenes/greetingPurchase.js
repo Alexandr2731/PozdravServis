@@ -34,7 +34,7 @@ export const greetingPurchaseWizard = new Scenes.WizardScene(
     try {
       price = greetingPriceRub();
     } catch (err) {
-      await ctx.reply(`Оплата пока недоступна: ${err.message}. Попробуй позже.`);
+      await ctx.reply(`Оплата пока недоступна: ${err.message}. Попробуйте, пожалуйста, позже.`);
       return ctx.scene.leave();
     }
     // Скидка за прошлый отказ от этой же услуги (promoStore.js) применяется сама.
@@ -43,25 +43,25 @@ export const greetingPurchaseWizard = new Scenes.WizardScene(
     ctx.wizard.state.price = finalPrice;
     ctx.wizard.state.promoId = promo?.promoId ?? null;
     const priceLine = promo
-      ? `Стоимость: ${finalPrice} ₽ вместо ${price} ₽ — твоя скидка ${promo.percent}% (действует до ${formatPromoDate(promo.expiresAt)}).`
+      ? `Стоимость: ${finalPrice} ₽ вместо ${price} ₽ — Ваша скидка ${promo.percent}% (действует до ${formatPromoDate(promo.expiresAt)}).`
       : `Стоимость: ${price} ₽ — разовая покупка.`;
     await ctx.reply(
       "🎬 Анимированное поздравление\n\n" +
         "Оживим фото: человек на нём сам прочитает поздравление — голосом того, кто поздравляет, " +
         "или стандартным голосом. Стиль видео — реалистичный или мультяшный. Длительность — около 30 секунд.\n\n" +
         "Что входит:\n" +
-        "• текст — свой или напишем за тебя: 2 варианта на выбор и ещё 2, если первые не подойдут\n" +
+        "• текст — Ваш или напишем за Вас: 2 варианта на выбор и ещё 2, если первые не подойдут\n" +
         "• обычный текст или стихи\n" +
         "• готовое видео прямо сюда, в чат\n\n" +
         `${priceLine}\n\n` +
-        "Не понравится — дадим скидку 50% на следующее анимированное поздравление.",
+        "Не понравится — подарим скидку 50% на следующее анимированное поздравление.",
       Markup.inlineKeyboard([Markup.button.callback(`💳 Купить за ${finalPrice} ₽`, "purchase:buy")])
     );
     return ctx.wizard.next();
   },
   async (ctx) => {
     if (ctx.callbackQuery?.data !== "purchase:buy") {
-      await ctx.reply("Нажми «Купить» выше или /start, чтобы вернуться в меню.");
+      await ctx.reply("Нажмите «Купить» выше или /start, чтобы вернуться в меню.");
       return;
     }
     await ctx.answerCbQuery();
@@ -71,7 +71,7 @@ export const greetingPurchaseWizard = new Scenes.WizardScene(
   async (ctx) => {
     const email = ctx.message?.text?.trim();
     if (!email || !email.includes("@")) {
-      await ctx.reply("Похоже, это не email. Пришли ещё раз.");
+      await ctx.reply("Похоже, это не email. Пришлите, пожалуйста, ещё раз.");
       return;
     }
     const price = ctx.wizard.state.price;
@@ -96,12 +96,12 @@ export const greetingPurchaseWizard = new Scenes.WizardScene(
 
       // Кнопка вместо голой длинной ссылки в тексте (живой прогон 23.09.2026, knowledge/tasks.md ОПЛАТА-1).
       await ctx.reply(
-        "Нажми кнопку, чтобы оплатить. Сразу после оплаты я напишу сюда — и начнём создавать поздравление.\n\n" +
+        "Нажмите кнопку, чтобы оплатить. Сразу после оплаты мы напишем сюда — и начнём создавать поздравление.\n\n" +
           "Ссылка действует около часа.",
         Markup.inlineKeyboard([Markup.button.url(`💳 Оплатить ${price} ₽`, confirmationUrl)])
       );
     } catch (err) {
-      await ctx.reply(`Не получилось создать платёж: ${err.message}. Попробуй ещё раз позже — /start.`);
+      await ctx.reply(`Не получилось создать платёж: ${err.message}. Попробуйте ещё раз позже — /start.`);
     }
     return ctx.scene.leave();
   }

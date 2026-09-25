@@ -33,7 +33,7 @@ const videoStyleKeyboard = Markup.inlineKeyboard([
 
 const textSourceKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("✍️ У меня свой текст", "textsrc:own"),
-  Markup.button.callback("🤖 Помоги написать", "textsrc:help"),
+  Markup.button.callback("🤖 Помогите написать", "textsrc:help"),
 ]);
 
 const textStyleKeyboard = Markup.inlineKeyboard([
@@ -107,7 +107,7 @@ async function generateAndShowVariants(ctx) {
   const footer = canRevise
     ? ""
     : "\n\nМожно выбрать любой из вариантов — и новых, и прошлых. Если ни один не подходит — " +
-      "пришли свой текст или откажись от заказа — дадим скидку 50% на следующее поздравление.";
+      "пришлите свой текст или откажитесь от заказа — подарим скидку 50% на следующее поздравление.";
   await ctx.reply(
     `Вот что получилось:\n\n${message}${footer}`,
     textVariantKeyboard(ctx.wizard.state.textVariants.length, canRevise)
@@ -127,14 +127,14 @@ async function startGeneration(ctx) {
     voiceFileId: ctx.wizard.state.voiceFileId,
   });
   await ctx.reply(
-    "🎬 Генерация видео началась ⚡\nОбычно занимает не более 10 минут.\nЯ пришлю видео сюда, как только будет готово 🎧"
+    "🎬 Генерация видео началась ⚡\nОбычно это занимает не более 10 минут.\nПришлём видео сюда, как только оно будет готово 🎧"
   );
   const telegram = ctx.telegram;
   fulfillGreetingOrder(telegram, order).catch(async (err) => {
     console.error("fulfillGreetingOrder failed:", err);
     updateOrder(orderId, { status: "failed", error: err.message });
     await telegram
-      .sendMessage(order.chatId, `Не получилось создать видео: ${err.message}. Напиши нам — разберёмся и вернём деньги.`)
+      .sendMessage(order.chatId, `Не получилось создать видео: ${err.message}. Напишите нам — разберёмся и вернём деньги.`)
       .catch(() => {});
   });
   return ctx.scene.leave();
@@ -145,7 +145,7 @@ export const greetingWizard = new Scenes.WizardScene(
   async (ctx) => {
     const order = ctx.wizard.state.orderId && getOrder(ctx.wizard.state.orderId);
     if (!order || (order.status !== "paid" && order.status !== "in_progress")) {
-      await ctx.reply("Сначала нужно оплатить поздравление — жми /start.");
+      await ctx.reply("Сначала нужно оплатить поздравление — нажмите /start.");
       return ctx.scene.leave();
     }
     updateOrder(order.orderId, { status: "in_progress" });
@@ -155,7 +155,7 @@ export const greetingWizard = new Scenes.WizardScene(
   async (ctx) => {
     const code = ctx.callbackQuery?.data?.split(":")[1];
     if (!code) {
-      ctx.reply("Выбери повод кнопкой выше.");
+      ctx.reply("Выберите повод кнопкой выше.");
       return;
     }
     ctx.wizard.state.occasion = occasionLabel(code);
@@ -169,18 +169,18 @@ export const greetingWizard = new Scenes.WizardScene(
   async (ctx) => {
     const style = ctx.callbackQuery?.data?.split(":")[1];
     if (!style) {
-      ctx.reply("Выбери стиль кнопкой выше.");
+      ctx.reply("Выберите стиль кнопкой выше.");
       return;
     }
     ctx.wizard.state.videoStyle = style;
     await ctx.answerCbQuery();
-    await ctx.reply("У тебя уже есть текст или стих поздравления, или помочь его написать?", textSourceKeyboard);
+    await ctx.reply("У Вас уже есть текст или стихи для поздравления, или помочь их написать?", textSourceKeyboard);
     return ctx.wizard.next();
   },
   async (ctx) => {
     const choice = ctx.callbackQuery?.data?.split(":")[1];
     if (!choice) {
-      ctx.reply("Выбери кнопкой выше.");
+      ctx.reply("Выберите вариант кнопкой выше.");
       return;
     }
     ctx.wizard.state.textMode = choice;
@@ -190,7 +190,7 @@ export const greetingWizard = new Scenes.WizardScene(
       return ctx.wizard.next(); // -> шаг выбора прозы/стихов
     }
     await ctx.reply(
-      "Пришли текст поздравления — текстом, или голосовым сообщением (тогда этим же голосом " +
+      "Пришлите текст поздравления — текстом или голосовым сообщением (тогда этим же голосом " +
         "прочитает поздравление в видео — отдельно голос для клонирования спрашивать не будем)."
     );
     // "Свой текст" — без прозы/стихов (это уже готовый текст клиента, мы его не переписываем)
@@ -202,12 +202,12 @@ export const greetingWizard = new Scenes.WizardScene(
   async (ctx) => {
     const style = ctx.callbackQuery?.data?.split(":")[1];
     if (!style) {
-      ctx.reply("Выбери кнопкой выше.");
+      ctx.reply("Выберите вариант кнопкой выше.");
       return;
     }
     ctx.wizard.state.textStyle = style;
     await ctx.answerCbQuery();
-    await ctx.reply("Расскажи о человеке, кого поздравляем: имя, что любит, за что цените.");
+    await ctx.reply("Расскажите о человеке, которого поздравляем: имя, что любит, за что Вы его цените.");
     return ctx.wizard.next();
   },
   // Только для textMode === "help" — собираем информацию и генерируем 2 варианта на выбор.
@@ -215,7 +215,7 @@ export const greetingWizard = new Scenes.WizardScene(
     const typed = ctx.message?.text;
     const voice = ctx.message?.voice;
     if (!typed && !voice) {
-      ctx.reply("Пришли текст или голосовое сообщение.");
+      ctx.reply("Пришлите текст или голосовое сообщение.");
       return;
     }
     try {
@@ -237,7 +237,7 @@ export const greetingWizard = new Scenes.WizardScene(
     if (Number.isInteger(variantIndex) && ctx.wizard.state.textVariants?.[variantIndex]) {
       await ctx.answerCbQuery();
       ctx.wizard.state.text = ctx.wizard.state.textVariants[variantIndex];
-      await ctx.reply("Теперь пришли фото, которое станет основой поздравления.");
+      await ctx.reply("Теперь пришлите фото, которое станет основой поздравления.");
       // next() увёл бы на шаг "свой текст" (следующий по счёту, но не по смыслу) — текст
       // уже выбран, нужен сразу шаг приёма фото (тот же, куда попадает и ветка "свой текст").
       ctx.wizard.selectStep(ctx.wizard.cursor + 2);
@@ -247,7 +247,7 @@ export const greetingWizard = new Scenes.WizardScene(
     if (action === "own") {
       await ctx.answerCbQuery();
       await ctx.reply(
-        "Пришли свой текст поздравления — текстом, или голосовым сообщением (тогда этим же голосом " +
+        "Пришлите свой текст поздравления — текстом или голосовым сообщением (тогда этим же голосом " +
           "прочитает поздравление в видео)."
       );
       return ctx.wizard.next(); // -> шаг "свой текст"
@@ -264,7 +264,7 @@ export const greetingWizard = new Scenes.WizardScene(
     if (action === "edit" && hasFreeRevisionsLeft(ctx.wizard.state.textRevisions ?? 0)) {
       await ctx.answerCbQuery();
       await ctx.reply(
-        "Что поправить? Опиши свободно, или просто расскажи о человеке ещё раз, если хочешь другие варианты целиком."
+        "Что поправить? Опишите своими словами — или расскажите о человеке ещё раз, если хотите совсем другие варианты."
       );
       ctx.wizard.state.awaitingTextFeedback = true;
       return; // остаёмся на этом шаге
@@ -284,7 +284,7 @@ export const greetingWizard = new Scenes.WizardScene(
     }
 
     if (ctx.callbackQuery) await ctx.answerCbQuery();
-    await ctx.reply("Выбери кнопкой под вариантами выше.");
+    await ctx.reply("Выберите кнопкой под вариантами выше.");
   },
   // Только для textMode === "own" — принимаем текст как есть, без одобрения и стиля.
   // Если прислали голосом — тот же файл станет источником голоса для клонирования позже
@@ -293,7 +293,7 @@ export const greetingWizard = new Scenes.WizardScene(
     const typed = ctx.message?.text;
     const voice = ctx.message?.voice;
     if (!typed && !voice) {
-      ctx.reply("Пришли текст или голосовое сообщение.");
+      ctx.reply("Пришлите текст или голосовое сообщение.");
       return;
     }
     let text;
@@ -314,20 +314,20 @@ export const greetingWizard = new Scenes.WizardScene(
     if (words > MAX_GREETING_TEXT_WORDS) {
       await ctx.reply(
         `Текст длинноват для короткого видео-поздравления (~30 секунд) — сейчас примерно ${words} слов, ` +
-          `уложись в ${MAX_GREETING_TEXT_WORDS}. Пришли покороче — текстом или голосовым.`
+          `а нужно не больше ${MAX_GREETING_TEXT_WORDS}. Пришлите, пожалуйста, покороче — текстом или голосовым.`
       );
       return; // остаёмся на этом же шаге, ждём текст ещё раз
     }
 
     ctx.wizard.state.text = text;
     if (voiceFileId) ctx.wizard.state.voiceFileId = voiceFileId;
-    await ctx.reply("Теперь пришли фото, которое станет основой поздравления.");
+    await ctx.reply("Теперь пришлите фото, которое станет основой поздравления.");
     return ctx.wizard.next();
   },
   (ctx) => {
     const photo = ctx.message?.photo?.at(-1);
     if (!photo) {
-      ctx.reply("Нужно именно фото. Попробуй ещё раз.");
+      ctx.reply("Нужно именно фото. Попробуйте, пожалуйста, ещё раз.");
       return;
     }
     ctx.wizard.state.photoFileId = photo.file_id;
@@ -337,7 +337,7 @@ export const greetingWizard = new Scenes.WizardScene(
   async (ctx) => {
     const answer = ctx.callbackQuery?.data?.split(":")[1];
     if (!answer) {
-      ctx.reply("Ответь кнопкой выше.");
+      ctx.reply("Ответьте кнопкой выше.");
       return;
     }
     await ctx.answerCbQuery();
@@ -349,7 +349,7 @@ export const greetingWizard = new Scenes.WizardScene(
       await ctx.reply(
         "Пока мы не можем обработать фото, где кроме поздравляемого есть кто-то ещё — " +
           "«оживление» чужого образа без согласия всех, кто на фото, мы не делаем, независимо от стиля.\n\n" +
-          "Пришли, пожалуйста, другое фото — где только тот, кого поздравляем."
+          "Пришлите, пожалуйста, другое фото — где только тот, кого поздравляем."
       );
       return ctx.wizard.back(); // -> снова шаг приёма фото
     }
@@ -361,8 +361,8 @@ export const greetingWizard = new Scenes.WizardScene(
     }
 
     await ctx.reply(
-      "Хочешь, чтобы поздравление звучало голосом того, кто поздравляет?\n\n" +
-        "Пришли голосовое сообщение (10-30 секунд, чётко и без шума) — или нажми кнопку, чтобы использовать стандартный голос.",
+      "Хотите, чтобы поздравление звучало голосом того, кто поздравляет?\n\n" +
+        "Пришлите голосовое сообщение (10–30 секунд, чётко и без шума) — или нажмите кнопку, чтобы использовать стандартный голос.",
       voiceKeyboard
     );
     return ctx.wizard.next();
@@ -371,7 +371,7 @@ export const greetingWizard = new Scenes.WizardScene(
     const isSkip = ctx.callbackQuery?.data === "voice:default";
     const voice = ctx.message?.voice;
     if (!isSkip && !voice) {
-      ctx.reply("Пришли голосовое сообщение или нажми кнопку «Стандартный голос».");
+      ctx.reply("Пришлите голосовое сообщение или нажмите кнопку «Стандартный голос».");
       return;
     }
     if (isSkip) await ctx.answerCbQuery();

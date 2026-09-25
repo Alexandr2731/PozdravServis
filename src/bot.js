@@ -32,19 +32,19 @@ const serviceKeyboard = Markup.inlineKeyboard([
 stage.start(async (ctx) => {
   await ctx.scene.leave();
   await ctx.reply(
-    `Привет, ${ctx.from.first_name || "друг"}! 👋\n\n` +
-      "Я — «PozdravServis», сервис креативных поздравлений с помощью ИИ.\n\n" +
-      "Что я умею:\n" +
+    `Здравствуйте, ${ctx.from.first_name || "друг"}! 👋\n\n` +
+      "Мы — «PozdravServis», сервис креативных поздравлений с помощью ИИ.\n\n" +
+      "Что мы умеем:\n" +
       "🎬 Анимированное поздравление — оживим фото: человек на нём сам прочитает поздравление " +
-      "(твоим текстом или мы поможем написать — обычным текстом или стихами), голосом того, кто поздравляет, " +
+      "(Вашим текстом или мы поможем написать — обычным текстом или стихами), голосом того, кто поздравляет, " +
       "в реалистичном или мультяшном стиле\n" +
       "🎵 Поздравительная песня — скоро\n" +
       "🎞 Поздравительный клип — скоро\n\n" +
       "Как это устроено:\n" +
-      "1. Выбираешь услугу и оплачиваешь\n" +
-      "2. Выбираешь повод, присылаешь фото и текст (или просишь помочь с текстом)\n" +
-      "3. Получаешь готовое видео прямо сюда\n" +
-      "4. Понравилось — забираешь. Не понравилось — дадим скидку 50% на следующее поздравление"
+      "1. Вы выбираете услугу и оплачиваете её\n" +
+      "2. Выбираете повод, присылаете фото и текст (или мы поможем с текстом)\n" +
+      "3. Получаете готовое видео прямо сюда, в чат\n" +
+      "4. Понравилось — забираете. Не понравилось — дарим скидку 50% на следующее поздравление"
   );
   return ctx.reply("С чего начнём?", serviceKeyboard);
 });
@@ -55,7 +55,7 @@ stage.action("service:video", async (ctx) => {
   // его, а не просим платить второй раз.
   const unfinished = findUnfinishedPaidOrder(String(ctx.from.id));
   if (unfinished) {
-    await ctx.reply("У тебя уже есть оплаченное поздравление — продолжаем с него.");
+    await ctx.reply("У Вас уже есть оплаченное поздравление — продолжаем с него.");
     return ctx.scene.enter("greeting-wizard", { orderId: unfinished.orderId });
   }
   return ctx.scene.enter("greeting-purchase");
@@ -70,7 +70,7 @@ stage.action(/^greeting:start:(.+)$/, async (ctx) => {
   const order = getOrder(ctx.match[1]);
   if (!order || order.userId !== String(ctx.from.id)) return ctx.answerCbQuery("Заказ не найден.");
   if (order.status !== "paid" && order.status !== "in_progress") {
-    return ctx.answerCbQuery("Этот заказ уже в работе или выполнен. Новый — /start.", { show_alert: true });
+    return ctx.answerCbQuery("Этот заказ уже в работе или выполнен. Новый заказ — /start.", { show_alert: true });
   }
   await ctx.answerCbQuery();
   return ctx.scene.enter("greeting-wizard", { orderId: order.orderId });
@@ -86,7 +86,7 @@ stage.action(/^greeting:accept:(.+)$/, async (ctx) => {
   }
   updateOrder(order.orderId, { status: "delivered" });
   await ctx.answerCbQuery("Готово! 🎉");
-  await ctx.reply("Спасибо! Если захочешь сделать ещё одно поздравление — жми /start.");
+  await ctx.reply("Спасибо, что выбрали нас! Если захотите сделать ещё одно поздравление — нажмите /start.");
 });
 
 stage.action(/^greeting:decline:(.+)$/, async (ctx) => {
@@ -99,9 +99,9 @@ stage.action(/^greeting:decline:(.+)$/, async (ctx) => {
 stage.help((ctx) =>
   ctx.reply(
     "Как это работает:\n\n" +
-      "1. /start — выбери услугу и оплати\n" +
-      "2. Выбери повод, пришли фото и текст (или попроси помочь с текстом)\n" +
-      "3. Дождись готового видео (обычно до 10 минут)"
+      "1. /start — выберите услугу и оплатите её\n" +
+      "2. Выберите повод, пришлите фото и текст (или попросите помочь с текстом)\n" +
+      "3. Дождитесь готового видео (обычно до 10 минут)"
   )
 );
 
@@ -180,8 +180,8 @@ async function handleYookassaWebhook(req, res) {
     await bot.telegram
       .sendMessage(
         order.chatId,
-        "✅ Оплата получена! Спасибо.\n\nТеперь создадим поздравление — это займёт пару минут: " +
-          "повод, текст, фото и голос. Жми «Начать» 👇",
+        "✅ Оплата получена, спасибо!\n\nТеперь создадим поздравление — это займёт пару минут: " +
+          "повод, текст, фото и голос. Нажмите «Начать» 👇",
         Markup.inlineKeyboard([Markup.button.callback("▶️ Начать", `greeting:start:${order.orderId}`)])
       )
       .catch((err) => console.error("payment confirmation message failed:", err));
