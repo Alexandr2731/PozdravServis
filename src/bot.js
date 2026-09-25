@@ -8,10 +8,10 @@ import { getPayment } from "./services/yookassa.js";
 import { getOrder, getOrderByPaymentId, updateOrder, findUnfinishedPaidOrder } from "./utils/orderStore.js";
 import { declineGreetingOrder, sendDeclineMessage } from "./services/greetingDecline.js";
 import { markPromoUsed } from "./utils/promoStore.js";
-import { runGreetingFulfillment, sendReadyVideo } from "./services/greetingFulfillment.js";
+import { runGreetingFulfillment, sendReadyVideo, resumeInterruptedGenerations } from "./services/greetingFulfillment.js";
 import { mainMenuKeyboard, draftsMessage, readyMessage } from "./services/orderFolders.js";
 import { registerVisit } from "./utils/userStore.js";
-import { initDocStore, flushDocStore } from "./utils/docStore.js";
+import { initDocStore, flushDocStore, allDocs } from "./utils/docStore.js";
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
 const stage = new Scenes.Stage([greetingWizard, greetingPurchaseWizard, songWizard]);
@@ -309,6 +309,11 @@ createServer((req, res) => {
 bot.telegram.setWebhook(`https://${PUBLIC_DOMAIN}${WEBHOOK_PATH}`).catch((err) => {
   console.error("setWebhook failed:", err.message);
 });
+
+// Генерации, оборванные перезапуском (деплой), — подхватываем заново.
+resumeInterruptedGenerations(bot.telegram, Object.values(allDocs("orders"))).catch((err) =>
+  console.error("resumeInterruptedGenerations failed:", err)
+);
 
 // При остановке (деплой) дописываем в базу изменения, которые ещё в пути.
 async function shutdown(signal) {

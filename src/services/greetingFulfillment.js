@@ -79,6 +79,36 @@ export async function sendReadyVideo(telegram, order, { caption = "Готово!
  * технических подробностей (живой тест 25.09.2026 показал ему сырой JSON ошибки HeyGen) и
  * кнопка повтора — всё собранное (текст, фото, голос) лежит в заказе, сценарий заново не нужен.
  */
+// Сколько раз подхватываем генерацию, прерванную перезапуском бота, прежде чем сдаться:
+// если заказ сам роняет процесс, бесконечного цикла «упал — подхватил — упал» не будет.
+const MAX_RESUMES = 2;
+
+/**
+ * При старте бота: генерации, которые шли в момент перезапуска (деплой), остались в статусе
+ * generating — видео до клиента не дойдёт, сообщения о сбое тоже (живой тест 25.09.2026:
+ * деплой в 13:30 оборвал генерацию, клиент ждал впустую). Запускаем их заново.
+ */
+export async function resumeInterruptedGenerations(telegram, orders) {
+  for (const order of orders.filter((o) => o.status === "generating")) {
+    const resumes = (order.resumeCount ?? 0) + 1;
+    if (resumes > MAX_RESUMES) {
+      updateOrder(order.orderId, { status: "failed", error: "прервано перезапуском слишком много раз" });
+      await notifyAdmin(telegram, `⚠️ Генерация прервана перезапусками ${MAX_RESUMES} раза — заказ ${order.orderId} помечен сбоем`);
+      await telegram
+        .sendMessage(
+          order.chatId,
+          "😔 К сожалению, видео не получилось из-за технического сбоя на нашей стороне. Приносим извинения!\n\n" +
+            "Текст, фото и голос сохранены — нажмите «Попробовать ещё раз».",
+          Markup.inlineKeyboard([Markup.button.callback("🔄 Попробовать ещё раз", `greeting:retry:${order.orderId}`)])
+        )
+        .catch(() => {});
+      continue;
+    }
+    console.log(`resume interrupted generation ${order.orderId} (попытка ${resumes})`);
+    runGreetingFulfillment(telegram, updateOrder(order.orderId, { resumeCount: resumes }));
+  }
+}
+
 export function runGreetingFulfillment(telegram, order) {
   updateOrder(order.orderId, { status: "generating" });
   fulfillGreetingOrder(telegram, order).catch(async (err) => {
