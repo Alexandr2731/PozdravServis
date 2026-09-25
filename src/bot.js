@@ -8,6 +8,7 @@ import { getPayment } from "./services/yookassa.js";
 import { getOrder, getOrderByPaymentId, updateOrder, findUnfinishedPaidOrder } from "./utils/orderStore.js";
 import { declineGreetingOrder, sendDeclineMessage } from "./services/greetingDecline.js";
 import { markPromoUsed } from "./utils/promoStore.js";
+import { runGreetingFulfillment } from "./services/greetingFulfillment.js";
 import { registerVisit } from "./utils/userStore.js";
 
 const bot = new Telegraf(process.env.BOT_TOKENNP);
@@ -100,6 +101,18 @@ stage.action(/^greeting:accept:(.+)$/, async (ctx) => {
           "Сделать следующее поздравление — /start."
       : "Спасибо, что выбрали нас! Если захотите сделать ещё одно поздравление — нажмите /start."
   );
+});
+
+// Повтор генерации после технического сбоя (runGreetingFulfillment) — всё уже в заказе.
+// Проверка статуса failed обязательна: иначе двойное нажатие запустит две платные генерации.
+stage.action(/^greeting:retry:(.+)$/, async (ctx) => {
+  const order = getOrder(ctx.match[1]);
+  if (!order || order.userId !== String(ctx.from.id) || order.status !== "failed") {
+    return ctx.answerCbQuery("Этот заказ уже в работе или выполнен.", { show_alert: true });
+  }
+  await ctx.answerCbQuery();
+  await ctx.reply("🔄 Пробуем ещё раз. Обычно это занимает не более 10 минут — пришлём видео сюда.");
+  runGreetingFulfillment(ctx.telegram, order);
 });
 
 stage.action(/^greeting:decline:(.+)$/, async (ctx) => {

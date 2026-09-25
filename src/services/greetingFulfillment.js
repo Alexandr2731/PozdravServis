@@ -1,5 +1,5 @@
 import { Markup } from "telegraf";
-import { generateGreetingVideo, cloneVoiceFromAudio } from "./heygen.js";
+import { generateGreetingVideo, cloneVoiceFromAudio, deleteVoice } from "./heygen.js";
 import { stylizeCartoon } from "./openai.js";
 import { convertOggToMp3 } from "../utils/audio.js";
 import { updateOrder } from "../utils/orderStore.js";
@@ -47,12 +47,40 @@ export async function fulfillGreetingOrder(telegram, order) {
     voiceId = await cloneVoiceFromAudio(mp3Buffer);
   }
 
-  const videoUrl = await generateGreetingVideo({ photoBuffer, text: order.text, voiceId });
+  let videoUrl;
+  try {
+    videoUrl = await generateGreetingVideo({ photoBuffer, text: order.text, voiceId });
+  } finally {
+    // Клон нужен только на эту генерацию — освобождаем слот (у тарифа HeyGen их всего 2).
+    if (voiceId) await deleteVoice(voiceId).catch((err) => console.error("deleteVoice failed:", err));
+  }
 
   updateOrder(order.orderId, { variants: [...order.variants, videoUrl], status: "awaiting_review" });
 
   await telegram.sendVideo(order.chatId, videoUrl, {
     caption: "Готово! Вот Ваше поздравление 🎉",
     ...reviewKeyboard(order.orderId, order.isFreeTrial),
+  });
+}
+
+/**
+ * Запуск генерации в фоне (до 10 минут) с обработкой сбоя: клиенту — понятное сообщение без
+ * технических подробностей (живой тест 25.09.2026 показал ему сырой JSON ошибки HeyGen) и
+ * кнопка повтора — всё собранное (текст, фото, голос) лежит в заказе, сценарий заново не нужен.
+ */
+export function runGreetingFulfillment(telegram, order) {
+  updateOrder(order.orderId, { status: "generating" });
+  fulfillGreetingOrder(telegram, order).catch(async (err) => {
+    console.error("fulfillGreetingOrder failed:", order.orderId, err);
+    updateOrder(order.orderId, { status: "failed", error: err.message });
+    await telegram
+      .sendMessage(
+        order.chatId,
+        "😔 К сожалению, видео не получилось из-за технического сбоя на нашей стороне. Приносим извинения!\n\n" +
+          "Ваш текст, фото и голос сохранены — нажмите «Попробовать ещё раз», заново ничего проходить не нужно. " +
+          "Если не получится и со второй попытки — напишите нам, разберёмся.",
+        Markup.inlineKeyboard([Markup.button.callback("🔄 Попробовать ещё раз", `greeting:retry:${order.orderId}`)])
+      )
+      .catch(() => {});
   });
 }

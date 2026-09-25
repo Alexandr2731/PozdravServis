@@ -5,7 +5,7 @@ import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 import { occasionKeyboard, occasionLabel } from "../constants/occasions.js";
 import { getOrder, updateOrder } from "../utils/orderStore.js";
 import { hasFreeRevisionsLeft, accumulateVariants } from "../utils/revisionRules.js";
-import { fulfillGreetingOrder } from "../services/greetingFulfillment.js";
+import { runGreetingFulfillment } from "../services/greetingFulfillment.js";
 import { declineGreetingOrder, sendDeclineMessage } from "../services/greetingDecline.js";
 
 // Сцена запускается ТОЛЬКО по уже оплаченному заказу (решение 24.09.2026, knowledge/tasks.md
@@ -80,6 +80,20 @@ const voiceKeyboard = Markup.inlineKeyboard([
   Markup.button.callback("🔊 Стандартный голос", "voice:default"),
 ]);
 
+// Клиент уже говорил голосом (рассказ о человеке или правка текста) — не просим записывать
+// ещё раз, а предлагаем озвучить этим голосом (замечание Александра, живой тест 25.09.2026).
+const voiceSampleKeyboard = Markup.inlineKeyboard([
+  [Markup.button.callback("🎙 Да, моим голосом", "voice:sample")],
+  [Markup.button.callback("🔊 Стандартный голос", "voice:default")],
+]);
+
+// Короче этого голосовое для клонирования не годится — тогда просим записать отдельно.
+const MIN_VOICE_SAMPLE_SEC = 10;
+
+function rememberVoiceSample(ctx, voice) {
+  if (voice?.duration >= MIN_VOICE_SAMPLE_SEC) ctx.wizard.state.voiceSampleFileId = voice.file_id;
+}
+
 async function transcribeIfVoice(ctx, voice) {
   const voiceFileLink = await ctx.telegram.getFileLink(voice.file_id);
   // fetchWithTimeout, не голый fetch — скачивание с серверов Telegram иногда зависает
@@ -134,18 +148,7 @@ async function startGeneration(ctx) {
   await ctx.reply(
     "🎬 Генерация видео началась ⚡\nОбычно это занимает не более 10 минут.\nПришлём видео сюда, как только оно будет готово 🎧"
   );
-  const telegram = ctx.telegram;
-  fulfillGreetingOrder(telegram, order).catch(async (err) => {
-    console.error("fulfillGreetingOrder failed:", err);
-    updateOrder(orderId, { status: "failed", error: err.message });
-    await telegram
-      .sendMessage(
-        order.chatId,
-        `Не получилось создать видео: ${err.message}. Напишите нам — разберёмся` +
-          (order.isFreeTrial ? "." : " и вернём деньги.")
-      )
-      .catch(() => {});
-  });
+  runGreetingFulfillment(ctx.telegram, order);
   return ctx.scene.leave();
 }
 
@@ -230,6 +233,7 @@ export const greetingWizard = new Scenes.WizardScene(
     }
     try {
       ctx.wizard.state.personInfo = typed || (await transcribeIfVoice(ctx, voice));
+      rememberVoiceSample(ctx, voice);
       await ctx.reply("✍️ Пишу текст поздравления, два варианта — это займёт около 10 секунд...");
       await generateAndShowVariants(ctx);
     } catch (err) {
@@ -283,6 +287,7 @@ export const greetingWizard = new Scenes.WizardScene(
     if (ctx.wizard.state.awaitingTextFeedback && (ctx.message?.text || ctx.message?.voice)) {
       try {
         const feedback = ctx.message.text || (await transcribeIfVoice(ctx, ctx.message.voice));
+        rememberVoiceSample(ctx, ctx.message.voice);
         ctx.wizard.state.personInfo = `${ctx.wizard.state.personInfo}\n\nПравка от клиента: ${feedback}`;
         ctx.wizard.state.awaitingTextFeedback = false;
         await ctx.reply("✍️ Переписываю, снова два варианта — около 10 секунд...");
@@ -370,6 +375,15 @@ export const greetingWizard = new Scenes.WizardScene(
       return startGeneration(ctx);
     }
 
+    if (ctx.wizard.state.voiceSampleFileId) {
+      await ctx.reply(
+        "Озвучить поздравление Вашим голосом — тем, которым Вы рассказывали нам о человеке?\n\n" +
+          "Можно и записать новое голосовое сообщение (10–30 секунд, чётко и без шума) — просто пришлите его.",
+        voiceSampleKeyboard
+      );
+      return ctx.wizard.next();
+    }
+
     await ctx.reply(
       "Хотите, чтобы поздравление звучало голосом того, кто поздравляет?\n\n" +
         "Пришлите голосовое сообщение (10–30 секунд, чётко и без шума) — или нажмите кнопку, чтобы использовать стандартный голос.",
@@ -379,7 +393,13 @@ export const greetingWizard = new Scenes.WizardScene(
   },
   async (ctx) => {
     const isSkip = ctx.callbackQuery?.data === "voice:default";
+    const useSample = ctx.callbackQuery?.data === "voice:sample" && ctx.wizard.state.voiceSampleFileId;
     const voice = ctx.message?.voice;
+    if (useSample) {
+      await ctx.answerCbQuery();
+      ctx.wizard.state.voiceFileId = ctx.wizard.state.voiceSampleFileId;
+      return startGeneration(ctx);
+    }
     if (!isSkip && !voice) {
       ctx.reply("Пришлите голосовое сообщение или нажмите кнопку «Стандартный голос».");
       return;
