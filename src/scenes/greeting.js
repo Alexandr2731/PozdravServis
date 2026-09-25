@@ -48,7 +48,8 @@ const textStyleKeyboard = Markup.inlineKeyboard([
 // вместо "Переделать" свой текст или отказ со скидкой на следующий заказ (оплата уже прошла).
 const VARIANT_EMOJI = ["1️⃣", "2️⃣", "3️⃣", "4️⃣"];
 
-function textVariantKeyboard(variantsCount, canRevise) {
+// allowDecline = false для бесплатной пробы: отказываться не от чего, скидку за неё не даём.
+function textVariantKeyboard(variantsCount, canRevise, allowDecline = true) {
   const variantButtons = Array.from({ length: variantsCount }, (_, i) =>
     Markup.button.callback(`${VARIANT_EMOJI[i] ?? i + 1} Вариант ${i + 1}`, `textvariant:${i}`)
   );
@@ -58,7 +59,7 @@ function textVariantKeyboard(variantsCount, canRevise) {
     rows.push([Markup.button.callback("✏️ Переделать", "textvariant:edit")]);
   } else {
     rows.push([Markup.button.callback("✍️ Пришлю свой текст", "textvariant:own")]);
-    rows.push([Markup.button.callback("🎟 Отказаться — скидка 50% на следующее", "textvariant:decline")]);
+    if (allowDecline) rows.push([Markup.button.callback("🎟 Отказаться — скидка 50% на следующее", "textvariant:decline")]);
   }
   return Markup.inlineKeyboard(rows);
 }
@@ -101,16 +102,20 @@ async function generateAndShowVariants(ctx) {
   ctx.wizard.state.textVariants = accumulateVariants(ctx.wizard.state.textVariants, variants);
   // сколько переделок уже использовано: 0 после первого раунда, 1 после второго
   ctx.wizard.state.textRevisions = ctx.wizard.state.textVariants.length / 2 - 1;
-  const canRevise = hasFreeRevisionsLeft(ctx.wizard.state.textRevisions);
+  // Бесплатная проба — облегчённая: один раунд вариантов, без переделки (решение 25.09.2026).
+  const isFreeTrial = ctx.wizard.state.isFreeTrial;
+  const canRevise = !isFreeTrial && hasFreeRevisionsLeft(ctx.wizard.state.textRevisions);
 
   const message = variants.map((t, i) => `Вариант ${firstNumber + i}:\n${t}`).join("\n\n———\n\n");
-  const footer = canRevise
+  const footer = isFreeTrial
+    ? "\n\nВ бесплатной пробной версии переделки текста нет. Выберите вариант или пришлите свой текст."
+    : canRevise
     ? ""
     : "\n\nМожно выбрать любой из вариантов — и новых, и прошлых. Если ни один не подходит — " +
       "пришлите свой текст или откажитесь от заказа — подарим скидку 50% на следующее поздравление.";
   await ctx.reply(
     `Вот что получилось:\n\n${message}${footer}`,
-    textVariantKeyboard(ctx.wizard.state.textVariants.length, canRevise)
+    textVariantKeyboard(ctx.wizard.state.textVariants.length, canRevise, !isFreeTrial)
   );
 }
 
@@ -134,7 +139,11 @@ async function startGeneration(ctx) {
     console.error("fulfillGreetingOrder failed:", err);
     updateOrder(orderId, { status: "failed", error: err.message });
     await telegram
-      .sendMessage(order.chatId, `Не получилось создать видео: ${err.message}. Напишите нам — разберёмся и вернём деньги.`)
+      .sendMessage(
+        order.chatId,
+        `Не получилось создать видео: ${err.message}. Напишите нам — разберёмся` +
+          (order.isFreeTrial ? "." : " и вернём деньги.")
+      )
       .catch(() => {});
   });
   return ctx.scene.leave();
@@ -149,6 +158,7 @@ export const greetingWizard = new Scenes.WizardScene(
       return ctx.scene.leave();
     }
     updateOrder(order.orderId, { status: "in_progress" });
+    ctx.wizard.state.isFreeTrial = Boolean(order.isFreeTrial);
     await ctx.reply("По какому поводу поздравление?", occasionKeyboard);
     return ctx.wizard.next();
   },

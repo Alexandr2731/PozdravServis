@@ -15,7 +15,9 @@ import { fetchWithTimeout } from "../utils/fetchWithTimeout.js";
 // анимировал фото. Поэтому сразу развилка: забрал результат, или отказ со скидкой на
 // следующий заказ (promoStore.js) — без промежуточного бесплатного передела.
 
-function reviewKeyboard(orderId) {
+function reviewKeyboard(orderId, isFreeTrial) {
+  // Бесплатная проба: отказываться не от чего — только «Забрать».
+  if (isFreeTrial) return Markup.inlineKeyboard([Markup.button.callback("✅ Забрать", `greeting:accept:${orderId}`)]);
   return Markup.inlineKeyboard([
     Markup.button.callback("✅ Забрать", `greeting:accept:${orderId}`),
     Markup.button.callback("🎟 Не подошло — скидка 50% на следующее", `greeting:decline:${orderId}`),
@@ -51,6 +53,6 @@ export async function fulfillGreetingOrder(telegram, order) {
 
   await telegram.sendVideo(order.chatId, videoUrl, {
     caption: "Готово! Вот Ваше поздравление 🎉",
-    ...reviewKeyboard(order.orderId),
+    ...reviewKeyboard(order.orderId, order.isFreeTrial),
   });
 }

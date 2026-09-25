@@ -51,7 +51,8 @@ stage.start(async (ctx) => {
       "1. Вы выбираете услугу и оплачиваете её\n" +
       "2. Выбираете повод, присылаете фото и текст (или мы поможем с текстом)\n" +
       "3. Получаете готовое видео прямо сюда, в чат\n" +
-      "4. Понравилось — забираете. Не понравилось — дарим скидку 50% на следующее поздравление"
+      "4. Понравилось — забираете. Не понравилось — дарим скидку 50% на следующее поздравление\n\n" +
+      "🎁 Первое анимированное поздравление — бесплатно!"
   );
   return ctx.reply("С чего начнём?", serviceKeyboard);
 });
@@ -62,7 +63,7 @@ stage.action("service:video", async (ctx) => {
   // его, а не просим платить второй раз.
   const unfinished = findUnfinishedPaidOrder(String(ctx.from.id));
   if (unfinished) {
-    await ctx.reply("У Вас уже есть оплаченное поздравление — продолжаем с него.");
+    await ctx.reply("У Вас есть незаконченное поздравление — продолжаем с него.");
     return ctx.scene.enter("greeting-wizard", { orderId: unfinished.orderId });
   }
   return ctx.scene.enter("greeting-purchase");
@@ -93,7 +94,12 @@ stage.action(/^greeting:accept:(.+)$/, async (ctx) => {
   }
   updateOrder(order.orderId, { status: "delivered" });
   await ctx.answerCbQuery("Готово! 🎉");
-  await ctx.reply("Спасибо, что выбрали нас! Если захотите сделать ещё одно поздравление — нажмите /start.");
+  await ctx.reply(
+    order.isFreeTrial
+      ? "Спасибо, что попробовали наш сервис! 🎁\n\nВ полной версии — ещё 2 варианта текста, если первые не подойдут. " +
+          "Сделать следующее поздравление — /start."
+      : "Спасибо, что выбрали нас! Если захотите сделать ещё одно поздравление — нажмите /start."
+  );
 });
 
 stage.action(/^greeting:decline:(.+)$/, async (ctx) => {

@@ -17,6 +17,8 @@ const DECLINABLE_STATUSES = new Set(["paid", "in_progress", "awaiting_review"]);
 export function declineGreetingOrder(orderId, userId) {
   const order = getOrder(orderId);
   if (!order || order.userId !== userId) return { ok: false, reason: "Заказ не найден." };
+  // Бесплатная проба ничего не стоила клиенту — скидку за отказ от неё не даём.
+  if (order.isFreeTrial) return { ok: false, reason: "Это была бесплатная пробная версия." };
   if (!DECLINABLE_STATUSES.has(order.status)) {
     return { ok: false, reason: "По этому заказу решение уже принято." };
   }

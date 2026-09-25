@@ -2,6 +2,7 @@ import { Scenes, Markup } from "telegraf";
 import { createPayment } from "../services/yookassa.js";
 import { createOrder, updateOrder } from "../utils/orderStore.js";
 import { findActivePromo, applyPromo, formatPromoDate } from "../utils/promoStore.js";
+import { registerVisit, hasUsedFreeTrial, markFreeTrialUsed } from "../utils/userStore.js";
 
 // Покупка Услуги 1 — ДО любой работы над поздравлением (решение Александра 24.09.2026,
 // knowledge/tasks.md ФЛОУ-1): выбор услуги -> стоимость и варианты покупки -> оплата ->
@@ -27,6 +28,32 @@ export function greetingPriceRub() {
   return price;
 }
 
+// Бесплатная проба — один раз на Telegram ID (решение Александра 25.09.2026, knowledge/tasks.md
+// ФЛОУ-1). Облегчённая: один раунд вариантов текста без переделки, без отказа со скидкой
+// (greeting.js / greetingFulfillment.js смотрят на order.isFreeTrial). Проба отмечается
+// использованной СРАЗУ при создании заказа, а не после видео — иначе, нажав кнопку в двух
+// сообщениях, можно получить две пробы. Email не спрашиваем — чека нет, оплаты нет.
+async function startFreeTrial(ctx) {
+  await ctx.answerCbQuery();
+  const userId = String(ctx.from.id);
+  if (hasUsedFreeTrial(userId, "greeting")) {
+    await ctx.reply("Бесплатную пробную версию Вы уже получали. Полная версия — /start.");
+    return ctx.scene.leave();
+  }
+  registerVisit(ctx.from); // клиент мог прийти до появления учёта (userStore.js) — заводим запись
+  const orderId = createOrder({
+    chatId: ctx.chat.id,
+    userId,
+    priceRub: 0,
+    isFreeTrial: true,
+    status: "paid",
+  });
+  markFreeTrialUsed(userId, "greeting", orderId);
+  await ctx.reply("🎁 Отлично, начинаем Ваше бесплатное поздравление!");
+  await ctx.scene.leave();
+  return ctx.scene.enter("greeting-wizard", { orderId });
+}
+
 export const greetingPurchaseWizard = new Scenes.WizardScene(
   "greeting-purchase",
   async (ctx) => {
@@ -42,6 +69,7 @@ export const greetingPurchaseWizard = new Scenes.WizardScene(
     const finalPrice = applyPromo(price, promo);
     ctx.wizard.state.price = finalPrice;
     ctx.wizard.state.promoId = promo?.promoId ?? null;
+    const trialAvailable = !hasUsedFreeTrial(String(ctx.from.id), "greeting");
     const priceLine = promo
       ? `Стоимость: ${finalPrice} ₽ вместо ${price} ₽ — Ваша скидка ${promo.percent}% (действует до ${formatPromoDate(promo.expiresAt)}).`
       : `Стоимость: ${price} ₽ — разовая покупка.`;
@@ -54,12 +82,20 @@ export const greetingPurchaseWizard = new Scenes.WizardScene(
         "• обычный текст или стихи\n" +
         "• готовое видео прямо сюда, в чат\n\n" +
         `${priceLine}\n\n` +
-        "Не понравится — подарим скидку 50% на следующее анимированное поздравление.",
-      Markup.inlineKeyboard([Markup.button.callback(`💳 Купить за ${finalPrice} ₽`, "purchase:buy")])
+        "Не понравится — подарим скидку 50% на следующее анимированное поздравление." +
+        (trialAvailable
+          ? "\n\n🎁 Первое поздравление — в подарок! Бесплатная пробная версия: 2 варианта текста " +
+            "на выбор, без переделки."
+          : ""),
+      Markup.inlineKeyboard([
+        ...(trialAvailable ? [[Markup.button.callback("🎁 Попробовать бесплатно", "purchase:trial")]] : []),
+        [Markup.button.callback(`💳 Купить за ${finalPrice} ₽`, "purchase:buy")],
+      ])
     );
     return ctx.wizard.next();
   },
   async (ctx) => {
+    if (ctx.callbackQuery?.data === "purchase:trial") return startFreeTrial(ctx);
     if (ctx.callbackQuery?.data !== "purchase:buy") {
       await ctx.reply("Нажмите «Купить» выше или /start, чтобы вернуться в меню.");
       return;
