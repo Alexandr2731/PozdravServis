@@ -84,14 +84,33 @@ export function runGreetingFulfillment(telegram, order) {
   fulfillGreetingOrder(telegram, order).catch(async (err) => {
     console.error("fulfillGreetingOrder failed:", order.orderId, err);
     updateOrder(order.orderId, { status: "failed", error: err.message });
-    await telegram
-      .sendMessage(
-        order.chatId,
-        "😔 К сожалению, видео не получилось из-за технического сбоя на нашей стороне. Приносим извинения!\n\n" +
-          "Ваш текст, фото и голос сохранены — нажмите «Попробовать ещё раз», заново ничего проходить не нужно. " +
-          "Если не получится и со второй попытки — напишите нам, разберёмся.",
-        Markup.inlineKeyboard([Markup.button.callback("🔄 Попробовать ещё раз", `greeting:retry:${order.orderId}`)])
-      )
-      .catch(() => {});
+    await notifyAdmin(telegram, `⚠️ Сбой генерации видео\nЗаказ: ${order.orderId}\nКлиент: ${order.userId}\nПричина: ${err.message.slice(0, 600)}`);
+
+    // Озвучка голосом клиента сейчас невозможна (у HeyGen закончились слоты клонов) —
+    // не заставляем ждать, а предлагаем сделать стандартным голосом прямо сейчас.
+    const voiceProblem = err.code === "VOICE_CLONE_LIMIT" && order.voiceFileId;
+    const text = voiceProblem
+      ? "😔 К сожалению, прямо сейчас не получается озвучить поздравление Вашим голосом — технический сбой " +
+        "на нашей стороне. Приносим извинения!\n\n" +
+        "Можно сделать видео стандартным голосом прямо сейчас — или попробовать Вашим голосом ещё раз чуть позже. " +
+        "Текст и фото сохранены, заново ничего проходить не нужно."
+      : "😔 К сожалению, видео не получилось из-за технического сбоя на нашей стороне. Приносим извинения!\n\n" +
+        "Ваш текст, фото и голос сохранены — нажмите «Попробовать ещё раз», заново ничего проходить не нужно. " +
+        "Если не получится и со второй попытки — напишите нам, разберёмся.";
+    const buttons = [
+      ...(voiceProblem ? [[Markup.button.callback("🔊 Сделать стандартным голосом", `greeting:retry-default:${order.orderId}`)]] : []),
+      [Markup.button.callback("🔄 Попробовать ещё раз", `greeting:retry:${order.orderId}`)],
+    ];
+    await telegram.sendMessage(order.chatId, text, Markup.inlineKeyboard(buttons)).catch(() => {});
   });
+}
+
+/**
+ * Уведомление владельцу сервиса в Telegram (ADMIN_CHAT_ID — его Telegram ID) — чтобы о сбоях
+ * узнавать сразу, а не из журналов Railway. Без переменной — молча пропускаем.
+ */
+export async function notifyAdmin(telegram, text) {
+  const chatId = process.env.ADMIN_CHAT_ID;
+  if (!chatId) return;
+  await telegram.sendMessage(chatId, text).catch((err) => console.error("notifyAdmin failed:", err.message));
 }

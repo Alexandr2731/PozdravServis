@@ -173,6 +173,22 @@ stage.action(/^greeting:retry:(.+)$/, async (ctx) => {
   runGreetingFulfillment(ctx.telegram, order);
 });
 
+// Голосом клиента сейчас не озвучить (у HeyGen нет свободных слотов клонов) — клиент сам
+// выбрал стандартный голос: убираем голос из заказа и запускаем заново.
+stage.action(/^greeting:retry-default:(.+)$/, async (ctx) => {
+  const order = getOrder(ctx.match[1]);
+  if (!order || order.userId !== String(ctx.from.id) || order.status !== "failed") {
+    return ctx.answerCbQuery("Этот заказ уже в работе или выполнен.", { show_alert: true });
+  }
+  await ctx.answerCbQuery();
+  await ctx.reply("🔊 Делаем стандартным голосом. Обычно это занимает не более 10 минут — пришлём видео сюда.");
+  runGreetingFulfillment(ctx.telegram, updateOrder(order.orderId, { voiceFileId: null, voiceFallback: true }));
+});
+
+// Telegram ID собеседника — чтобы владелец узнал свой и вписал в Railway как ADMIN_CHAT_ID
+// (уведомления о сбоях, notifyAdmin). Команда не в меню: клиентам она не нужна.
+stage.command("id", (ctx) => ctx.reply(`Ваш Telegram ID: ${ctx.from.id}`));
+
 stage.action(/^greeting:decline:(.+)$/, async (ctx) => {
   const result = declineGreetingOrder(ctx.match[1], String(ctx.from.id));
   if (!result.ok) return ctx.answerCbQuery(result.reason, { show_alert: true });

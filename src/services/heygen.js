@@ -88,6 +88,9 @@ async function deleteStaleClones() {
   const json = await res.json();
   if (!res.ok) throw new Error(`HeyGen list voices failed: ${JSON.stringify(json)}`);
   const now = Date.now();
+  // Видно в логах, чем заняты слоты (живой тест 25.09.2026: чистка не нашла что удалять —
+  // вероятно, слоты заняты голосами, созданными вручную в кабинете HeyGen).
+  console.log("HeyGen private voices:", (json?.data ?? []).map((v) => v.name).join(", ") || "(нет)");
   const stale = (json?.data ?? []).filter((v) => {
     if (!v.name?.startsWith(CLONE_NAME_PREFIX)) return false; // чужие/ручные голоса аккаунта не трогаем
     const createdAt = Number(v.name.slice(CLONE_NAME_PREFIX.length));
@@ -106,7 +109,13 @@ export async function cloneVoiceFromAudio(audioBuffer) {
     if (!err.message.includes("resource_limit_reached")) throw err;
     const deleted = await deleteStaleClones();
     console.log(`HeyGen clone limit reached — deleted ${deleted} stale clone(s), retrying`);
-    voiceCloneId = await cloneVoice(assetId);
+    try {
+      voiceCloneId = await cloneVoice(assetId);
+    } catch (retryErr) {
+      // Слотов нет и освободить нечего — помечаем, чтобы клиенту предложить стандартный голос.
+      if (retryErr.message.includes("resource_limit_reached")) retryErr.code = "VOICE_CLONE_LIMIT";
+      throw retryErr;
+    }
   }
   return waitForVoiceClone(voiceCloneId);
 }
