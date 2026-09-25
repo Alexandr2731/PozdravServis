@@ -1,3 +1,6 @@
 node_modules/
 .env
 data/
+
+# сырые треки Mureka (большие) — не в репозиторий
+knowledge/brand/sound-candidates/raw/
